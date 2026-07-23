@@ -1,0 +1,104 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mujoco model="NexArm-sim">
+  <compiler angle="radian" eulerseq="XYZ" />
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" />
+  <default>
+    <joint damping="0.1" armature="0.001" />
+    <default class="proximal_servo">
+      <position kp="80" kv="8" forcelimited="true" forcerange="-15 15" />
+    </default>
+    <default class="distal_servo">
+      <position kp="40" kv="4" forcelimited="true" forcerange="-8 8" />
+    </default>
+    <default class="gripper_servo">
+      <position kp="300" kv="10" forcelimited="true" forcerange="-20 20" />
+    </default>
+  </default>
+  <asset>
+    <mesh name="base_link" file="meshes/base_link.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_1" file="meshes/link_1.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_2" file="meshes/link_2.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_3" file="meshes/link_3.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_4" file="meshes/link_4.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_5" file="meshes/link_5.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_6_gripper_base" file="meshes/link_6_gripper_base.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_6_pinion_gear" file="meshes/link_6_pinion_gear.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_6_left_jaw" file="meshes/link_6_left_jaw.stl" scale="0.001 0.001 0.001" />
+    <mesh name="link_6_right_jaw" file="meshes/link_6_right_jaw.stl" scale="0.001 0.001 0.001" />
+    <mesh name="cam_mount" file="meshes/cam_mount.stl" scale="0.001 0.001 0.001" />
+    <material name="body_white" rgba="0.82 0.84 0.86 1" specular="0.35" shininess="0.45" />
+    <material name="gripper_dark" rgba="0.08 0.09 0.10 1" specular="0.2" shininess="0.25" />
+    <material name="camera_dark" rgba="0.025 0.025 0.03 1" specular="0.15" shininess="0.2" />
+  </asset>
+  <worldbody>
+    <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1" />
+    <geom pos="0 0 0" size="1 1 1" type="plane" rgba="1 0.83 0.61 0.5" />
+    <body name="base_link" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+      <geom name="base_link_geom" type="mesh" mesh="base_link" pos="0 0 0" euler="0 0 0" material="body_white" />
+      <inertial mass="0.7867009727411078" pos="0.5393802715439057 0.06383699083344999 0.018575393211147675" fullinertia="0.0013980203341607727 0.0014405623684496105 0.0018724205136954886 -4.476497315573924e-07 4.8308012364634e-09 -1.1875609967841377e-05" />
+      <body name="link_1" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+        <joint name="joint_1_base_to_link_1" type="hinge" axis="0.0 0.0 -1.0" pos="0.539369 0.063973 0.049" range="-2.356194 2.356194" limited="true" />
+        <geom name="link_1_geom" type="mesh" mesh="link_1" pos="0 0 0" euler="0 0 0" material="body_white" />
+        <inertial mass="0.7298097041640206" pos="0.5393689780016989 0.06351160578152394 0.0714848128440143" fullinertia="0.0005196380704404749 0.0006372106608207029 0.0006411280732055158 -1.5503778090890374e-06 -1.344094443384014e-09 -5.0336215709095335e-06" />
+        <body name="link_2" pos="-0.0041800000000009165 0.0 0.0" euler="0.0 6.061607195718255e-27 0.0">
+          <joint name="joint_2_link_1_to_link_2" type="hinge" axis="-1.0 0.0 -6.061607195718255e-27" pos="0.578649000000001 0.063973 0.106445" range="-2.094395 2.094395" limited="true" />
+          <geom name="link_2_geom" type="mesh" mesh="link_2" pos="0 0 0" euler="0 0 0" material="body_white" />
+          <inertial mass="0.4994895733577694" pos="0.5443690239780077 0.14442087229562123 0.18815068036299265" fullinertia="0.002232805038931151 0.0012834939144562019 0.0011840260217031162 -6.3851771092693355e-12 -7.2314793042593806e-12 -0.0010795166454906132" />
+          <body name="link_3" pos="0.0041800000000009165 0.0 2.533751807810786e-29" euler="0.0 -6.061607195718255e-27 0.0">
+            <joint name="joint_3_link_2_to_link_3" type="hinge" axis="-1.0 0.0 0.0" pos="0.519439 0.196934 0.291684" range="-2.356194 2.356194" limited="true" />
+            <geom name="link_3_geom" type="mesh" mesh="link_3" pos="0 0 0" euler="0 0 0" material="body_white" />
+            <inertial mass="0.5027979794005489" pos="0.5381866448873921 0.1332855409202197 0.26208491913557574" fullinertia="0.0014864851567596982 0.0003252813199526583 0.0012457364008059968 -1.7122605747987851e-06 -6.545497001214651e-07 -0.0005481574072941295" />
+            <body name="link_4" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+              <joint name="joint_4_link_3_to_link_4" type="hinge" axis="1.0 0.0 0.0" pos="0.519119 0.06552 0.230406" range="-1.745329 1.745329" limited="true" />
+              <geom name="link_4_geom" type="mesh" mesh="link_4" pos="0 0 0" euler="0 0 0" material="body_white" />
+              <inertial mass="0.11506895352591937" pos="0.5392176779459051 0.041281396593536045 0.22580988795443432" fullinertia="3.8344234090156165e-05 3.793835926420297e-05 5.093441135242682e-05 3.0530253180508643e-07 -1.847602894289313e-08 -2.892912590979997e-06" />
+              <body name="link_5" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                <joint name="joint_5_link_4_to_link_5" type="hinge" axis="0.0 -1.0 0.0" pos="0.539369 0.018286 0.230423" range="-3.141593 3.141593" limited="true" />
+                <geom name="link_5_geom" type="mesh" mesh="link_5" pos="0 0 0" euler="0 0 0" material="body_white" />
+                <inertial mass="0.08776451730987904" pos="0.5393086008188529 0.002133956241745679 0.22622494096860302" fullinertia="1.6187345587265374e-05 1.8185347874118823e-05 1.8088799273514866e-05 1.9977723024017192e-08 -7.538487065139599e-08 -3.821086892151775e-07" />
+                <body name="link_6_gripper_base" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                  <geom name="link_6_gripper_base_geom" type="mesh" mesh="link_6_gripper_base" pos="0 0 0" euler="0 0 0" material="gripper_dark" />
+                  <inertial mass="0.07749283027852251" pos="0.5393685664856291 -0.02102069277037339 0.2306018231485346" fullinertia="8.952537590137775e-06 9.853334412318962e-05 9.251692805788483e-05 1.8891493512758484e-11 5.424480309379476e-15 7.900778562104898e-08" />
+                  <site name="grasp_site" pos="0.539369 -0.039412 0.230434" size="0.008" rgba="0 1 0 0" />
+                  <body name="link_6_pinion_gear" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                    <geom name="link_6_pinion_gear_geom" type="mesh" mesh="link_6_pinion_gear" pos="0 0 0" euler="0 0 0" material="gripper_dark" />
+                    <inertial mass="0.008131534567490549" pos="0.5393686458772673 -0.01968325967977576 0.23043625852406402" fullinertia="1.9890863152052926e-07 3.7122787318330866e-07 1.9890863139698442e-07 2.6834003769016235e-17 -2.7994100093575724e-16 8.259525326864952e-12" />
+                  </body>
+                  <body name="link_6_left_jaw" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                    <joint name="left_jaw_slide_joint" type="slide" axis="1.0 0.0 0.0" pos="0.539369 -0.027946 0.230436" range="0.0 0.0255" limited="true" />
+                    <geom name="link_6_left_jaw_geom" type="mesh" mesh="link_6_left_jaw" pos="0 0 0" euler="0 0 0" material="gripper_dark" />
+                    <inertial mass="0.11142260604578982" pos="0.5040031870950944 -0.0394122365348351 0.22977194490683142" fullinertia="2.2804235248568422e-05 1.4375065067753767e-05 2.255525860221652e-05 1.934228360217765e-06 7.005900850877433e-07 1.3792815477921619e-06" />
+                  </body>
+                  <body name="link_6_right_jaw" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                    <joint name="right_jaw_slide_joint" type="slide" axis="1.0 0.0 0.0" pos="0.539369 -0.027946 0.230436" range="-0.0255 0.0" limited="true" />
+                    <geom name="link_6_right_jaw_geom" type="mesh" mesh="link_6_right_jaw" pos="0 0 0" euler="0 0 0" material="gripper_dark" />
+                    <inertial mass="0.11142260605875676" pos="0.5747341098285005 -0.0394122993228384 0.23109511524340523" fullinertia="2.2804760926301536e-05 1.4375855706745544e-05 2.255499388791743e-05 -1.9342949416764274e-06 7.017275770130477e-07 -1.375626328256694e-06" />
+                  </body>
+                  <body name="cam_mount" pos="0.0 0.0 0.0" euler="0.0 -0.0 0.0">
+                    <geom name="cam_mount_geom" type="mesh" mesh="cam_mount" pos="0 0 0" euler="0 0 0" material="camera_dark" />
+                    <camera name="wrist" pos="0.539369 -0.04 0.27" xyaxes="-1.000000 -0.000000 0.000000 0.000000 -0.865426 0.501036" fovy="75" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="joint_1_position" class="proximal_servo" joint="joint_1_base_to_link_1" ctrllimited="true" ctrlrange="-2.356194 2.356194" />
+    <position name="joint_2_position" class="proximal_servo" joint="joint_2_link_1_to_link_2" ctrllimited="true" ctrlrange="-2.094395 2.094395" />
+    <position name="joint_3_position" class="proximal_servo" joint="joint_3_link_2_to_link_3" ctrllimited="true" ctrlrange="-2.356194 2.356194" />
+    <position name="joint_4_position" class="distal_servo" joint="joint_4_link_3_to_link_4" ctrllimited="true" ctrlrange="-1.745329 1.745329" />
+    <position name="joint_5_position" class="distal_servo" joint="joint_5_link_4_to_link_5" ctrllimited="true" ctrlrange="-3.141593 3.141593" />
+    <position name="gripper_position" class="gripper_servo" joint="left_jaw_slide_joint" ctrllimited="true" ctrlrange="0 0.0255" />
+  </actuator>
+  <equality>
+    <joint name="gripper_jaws_opposed_1_to_1" joint1="right_jaw_slide_joint" joint2="left_jaw_slide_joint" polycoef="0 -1 0 0 0" />
+  </equality>
+  <contact>
+    <exclude name="exclude_base_link_1" body1="base_link" body2="link_1" />
+    <exclude name="exclude_jaw_pair" body1="link_6_left_jaw" body2="link_6_right_jaw" />
+  </contact>
+</mujoco>

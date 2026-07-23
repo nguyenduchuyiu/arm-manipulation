@@ -1,0 +1,10 @@
+<mujoco model="arm_manipulation_scene">
+    <include file="assets/robot/robot.xml"/>
+
+    <worldbody>
+        <light pos="0 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+        <geom name="floor" type="plane" size="0 0 0 5" rgba="0.2 0.2 0.2 1"/>
+
+        <!-- task objects / table go here -->
+    </worldbody>
+</mujoco>
