@@ -116,7 +116,7 @@ def fk_search(ik, model, clone, addrs, rng, target_xyz, snap, q0,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", default="assets/robot_ref/scene.xml")
+    parser.add_argument("--scene", default="assets/robot/scene.xml")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", default="outputs")
     args = parser.parse_args()
@@ -141,7 +141,7 @@ def main() -> None:
     cube_joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cube_joint")
     gripper_base_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link_6_gripper_base")
     if cube_body < 0 or cube_joint < 0 or gripper_base_body < 0:
-        raise RuntimeError("reference scene must define body 'cube', joint 'cube_joint', body 'link_6_gripper_base'")
+        raise RuntimeError("scene must define body 'cube', joint 'cube_joint', body 'link_6_gripper_base'")
     cube_qadr = int(model.jnt_qposadr[cube_joint])
 
     # Arm-joint qpos addresses (joints 1..5) for FK-search clone settling.
@@ -155,7 +155,7 @@ def main() -> None:
     obj = np.asarray(data.xpos[cube_body], dtype=np.float64).copy()
     print(f"object position: {obj.tolist()}")
 
-    # Frame check: URDF FK link_6_gripper_base must match the reference MuJoCo
+    # Frame check: URDF FK link_6_gripper_base must match the canonical MuJoCo
     # body xpos, else snap-detection (URDF grasp_site) and the weld (MuJoCo
     # xpos) disagree.
     q5_home = np.array([data.qpos[addrs[j]] for j in range(5)], dtype=np.float64)

@@ -255,14 +255,14 @@
     <parent link="link_6_gripper_base" />
     <child link="link_6_left_jaw" />
     <axis xyz="1.0 0.0 0.0" />
-    <limit lower="0.0" upper="0.02" effort="1000000" velocity="1000000" />
+    <limit lower="0.0" upper="0.0255" effort="1000000" velocity="1000000" />
   </joint>
   <joint name="right_jaw_slide_joint" type="prismatic">
     <origin xyz="0.5393686400000001 -0.02794613 0.23043586000000002" rpy="1.5708442580926303 -0.0 0.0" />
     <parent link="link_6_gripper_base" />
     <child link="link_6_right_jaw" />
     <axis xyz="1.0 0.0 0.0" />
-    <limit lower="-0.02" upper="0.0" effort="1000000" velocity="1000000" />
+    <limit lower="-0.0255" upper="0.0" effort="1000000" velocity="1000000" />
     <mimic joint="left_jaw_slide_joint" multiplier="-1" offset="0" />
   </joint>
   <joint name="tool_to_gripper_base_fixed" type="fixed">

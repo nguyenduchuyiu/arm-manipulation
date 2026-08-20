@@ -14,8 +14,9 @@ class NexArmEnv(gym.Env):
 
     Action
     ------
-    Absolute position targets for six actuators:
-      joint_1 ... joint_5, left jaw.
+    Normalized absolute position targets in [-1, 1] for six actuators:
+      joint_1 ... joint_5, right jaw. For the gripper, +1 is fully open
+      and -1 is fully closed.
 
     Observation
     -----------
@@ -28,8 +29,7 @@ class NexArmEnv(gym.Env):
     observation.images.wrist:
       RGB camera attached to cam_mount.
 
-    Reward remains zero because this first version targets imitation/VLA data
-    collection rather than reinforcement learning.
+    Reward is one on task success and zero otherwise.
     """
 
     metadata = {
@@ -38,12 +38,12 @@ class NexArmEnv(gym.Env):
     }
 
     EXPECTED_ACTUATORS = (
-        "joint_1_position",
-        "joint_2_position",
-        "joint_3_position",
-        "joint_4_position",
-        "joint_5_position",
-        "gripper_position",
+        "joint_1_base_to_link_1_control",
+        "joint_2_link_1_to_link_2_control",
+        "joint_3_link_2_to_link_3_control",
+        "joint_4_link_3_to_link_4_control",
+        "joint_5_link_4_to_link_5_control",
+        "gripper_control",
     )
 
     CAMERA_NAMES = ("front", "wrist")
@@ -118,21 +118,13 @@ class NexArmEnv(gym.Env):
             dtype=np.int32,
         )
 
-        self.right_jaw_id = self._required_id(
-            mujoco.mjtObj.mjOBJ_JOINT,
-            "right_jaw_slide_joint",
-        )
-        self.right_jaw_qpos_address = int(
-            self.model.jnt_qposadr[self.right_jaw_id]
-        )
-
         self.object_body_id = self._required_id(
             mujoco.mjtObj.mjOBJ_BODY,
-            "object",
+            "cube",
         )
         self.object_joint_id = self._required_id(
             mujoco.mjtObj.mjOBJ_JOINT,
-            "object_freejoint",
+            "cube_joint",
         )
         self.object_qpos_address = int(
             self.model.jnt_qposadr[self.object_joint_id]
@@ -142,41 +134,34 @@ class NexArmEnv(gym.Env):
             mujoco.mjtObj.mjOBJ_SITE,
             "grasp_site",
         )
-        self.gripper_base_body_id = self._required_id(
-            mujoco.mjtObj.mjOBJ_BODY,
-            "link_6_gripper_base",
-        )
-
-        # Kinematic snap-grasp (the standard pick-lift model used by Robosuite /
-        # MetaWorld / sim-engine): when the jaw closes within SNAP_DIST of the
-        # object, weld the object to the gripper base frame so it follows the TCP;
-        # opening the jaw releases it. Real pinch contact cannot hold a 3.6 cm
-        # cube through a reorienting lift, so this is the one clear grasp path.
-        self.grip_close_threshold = 0.0127   # cmd 0=closed, 0.0255=open
-        self.snap_distance = 0.06
-        self._grasped = False
-        self._grasp_local_offset = None
-
         for camera_name in self.CAMERA_NAMES:
             self._required_id(
                 mujoco.mjtObj.mjOBJ_CAMERA,
                 camera_name,
             )
 
-        action_low = self.model.actuator_ctrlrange[:, 0].astype(np.float32)
-        action_high = self.model.actuator_ctrlrange[:, 1].astype(np.float32)
+        self.control_low = self.model.actuator_ctrlrange[:, 0].astype(np.float32)
+        self.control_high = self.model.actuator_ctrlrange[:, 1].astype(np.float32)
 
         self.action_space = spaces.Box(
-            low=action_low,
-            high=action_high,
+            low=-1.0,
+            high=1.0,
+            shape=(6,),
             dtype=np.float32,
         )
 
+        # MuJoCo joint limits are soft constraints, so qpos can briefly move
+        # beyond the commanded actuator range during contact or fast motion.
+        state_margin = np.maximum(
+            np.float32(0.1) * (self.control_high - self.control_low),
+            np.float32(0.005),
+        )
+        state_margin[-1] = np.float32(0.05)
         self.observation_space = spaces.Dict(
             {
                 "observation.state": spaces.Box(
-                    low=action_low,
-                    high=action_high,
+                    low=self.control_low - state_margin,
+                    high=self.control_high + state_margin,
                     shape=(6,),
                     dtype=np.float32,
                 ),
@@ -201,13 +186,14 @@ class NexArmEnv(gym.Env):
             width=self.image_width,
         )
 
-        self.home_action = np.array(
-            [0.0, 0.0, 0.0, 0.0, 0.0, 0.015],
-            dtype=np.float64,
+        self.home_control = np.array(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            dtype=np.float32,
         )
+        self.home_action = self.control_to_action(self.home_control)
 
         self.object_default_position = np.array(
-            [0.539, -0.18, 0.025],
+            [0.539, -0.18, 0.016],
             dtype=np.float64,
         )
 
@@ -233,6 +219,24 @@ class NexArmEnv(gym.Env):
     def control_dt(self) -> float:
         return self.simulation_dt * self.frame_skip
 
+    def action_to_control(self, action: np.ndarray) -> np.ndarray:
+        action = np.asarray(action, dtype=np.float32)
+        if action.shape != (6,):
+            raise ValueError(f"Expected action shape (6,), got {action.shape}")
+        normalized = np.clip(action, -1.0, 1.0)
+        return self.control_low + np.float32(0.5) * (
+            normalized + np.float32(1.0)
+        ) * (self.control_high - self.control_low)
+
+    def control_to_action(self, control: np.ndarray) -> np.ndarray:
+        control = np.asarray(control, dtype=np.float32)
+        if control.shape != (6,):
+            raise ValueError(f"Expected control shape (6,), got {control.shape}")
+        control = np.clip(control, self.control_low, self.control_high)
+        return np.float32(2.0) * (
+            control - self.control_low
+        ) / (self.control_high - self.control_low) - np.float32(1.0)
+
     def _name(self, object_type: mujoco.mjtObj, object_id: int) -> str:
         name = mujoco.mj_id2name(self.model, object_type, object_id)
         return name or f"<unnamed:{object_id}>"
@@ -255,9 +259,9 @@ class NexArmEnv(gym.Env):
                 f"Expected 6 actuators, found {self.model.nu}"
             )
 
-        if self.model.nq < 14:
+        if self.model.nq < 15:
             raise RuntimeError(
-                "scene.xml should contain the 7-DoF robot state "
+                "scene.xml should contain the 8-DoF robot state "
                 "and a free object joint."
             )
 
@@ -354,9 +358,8 @@ class NexArmEnv(gym.Env):
 
         mujoco.mj_resetData(self.model, self.data)
 
-        self.data.qpos[self.actuated_qpos_addresses] = self.home_action
-        self.data.qpos[self.right_jaw_qpos_address] = -self.home_action[-1]
-        self.data.ctrl[:] = self.home_action
+        self.data.qpos[self.actuated_qpos_addresses] = self.home_control
+        self.data.ctrl[:] = self.home_control
 
         self._reset_object()
 
@@ -364,15 +367,12 @@ class NexArmEnv(gym.Env):
         mujoco.mj_forward(self.model, self.data)
 
         for _ in range(self.settle_steps):
-            self.data.ctrl[:] = self.home_action
+            self.data.ctrl[:] = self.home_control
             mujoco.mj_step(self.model, self.data)
 
         self._elapsed_steps = 0
         self._lift_steps = 0
         self._terminated_reason = None
-        self._grasped = False
-        self._grasp_local_offset = None
-
         observation = self._get_observation()
         info = self._get_info()
 
@@ -396,43 +396,10 @@ class NexArmEnv(gym.Env):
                 f"got {action.shape}"
             )
 
-        action = np.clip(
-            action,
-            self.action_space.low,
-            self.action_space.high,
-        )
-
-        self.data.ctrl[:] = action
-
-        gripper_closed = float(action[5]) < self.grip_close_threshold
-        obj_pos = self._object_position()
-        grasp_pos = self._grasp_position()
-        dist = float(np.linalg.norm(obj_pos - grasp_pos))
-        if gripper_closed and not self._grasped and dist < self.snap_distance:
-            self._grasped = True
-            gpos = np.asarray(self.data.xpos[self.gripper_base_body_id], dtype=np.float64)
-            gmat = np.asarray(self.data.xmat[self.gripper_base_body_id], dtype=np.float64).reshape(3, 3)
-            self._grasp_local_offset = gmat.T @ (obj_pos.astype(np.float64) - gpos)
-        elif not gripper_closed and self._grasped:
-            self._grasped = False
-            self._grasp_local_offset = None
-
-        def _weld_object() -> None:
-            gpos = np.asarray(self.data.xpos[self.gripper_base_body_id], dtype=np.float64)
-            gmat = np.asarray(self.data.xmat[self.gripper_base_body_id], dtype=np.float64).reshape(3, 3)
-            world = gpos + gmat @ self._grasp_local_offset
-            qadr = self.object_qpos_address
-            self.data.qpos[qadr : qadr + 3] = world
-            self.data.qvel[qadr : qadr + 3] = 0.0
-            self.data.qvel[qadr + 3 : qadr + 6] = 0.0
-
-        if self._grasped:
-            _weld_object()
+        self.data.ctrl[:] = self.action_to_control(action)
 
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)
-            if self._grasped:
-                _weld_object()
 
         self._elapsed_steps += 1
 

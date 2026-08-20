@@ -43,11 +43,9 @@ def main() -> None:
     )
 
     # Hold the current physical pose; do not sample random full-range actions.
-    action = env.data.ctrl.copy().astype(np.float32)
+    action = env.home_action.copy()
     observation, info = env.reset(seed=0)
 
-    action = env.data.ctrl.copy().astype(np.float32)
-    
     for _ in range(100):
         observation, reward, terminated, truncated, info = env.step(
             action

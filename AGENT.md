@@ -1,5 +1,8 @@
 # AGENTS.md
 
+# Working Env
+Conda env amed "mujoco-vla"
+
 ## Files and directories to ignore
 
 Do not read, edit, summarize, search, or use files matching these paths unless I explicitly ask for them:

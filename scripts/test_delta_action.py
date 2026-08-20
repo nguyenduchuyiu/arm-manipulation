@@ -31,7 +31,7 @@ OUT = Path("outputs")
 def main() -> None:
     OUT.mkdir(exist_ok=True)
     backend = NexArmMujocoBackend(
-        model_path=Path("assets/robot_ref/scene.xml"),
+        model_path=Path("assets/robot/scene.xml"),
         fps=FPS, camera_width=384, camera_height=384,
         camera_names=("front", "wrist"),
     )

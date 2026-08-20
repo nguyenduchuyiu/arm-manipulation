@@ -58,7 +58,7 @@ def position_ik(backend, gb_id, addrs, target, q0):
 
 
 def main() -> None:
-    b = NexArmMujocoBackend(model_path=Path("assets/robot_ref/scene.xml"),
+    b = NexArmMujocoBackend(model_path=Path("assets/robot/scene.xml"),
                             fps=FPS, camera_width=160, camera_height=160, camera_names=("front",))
     b.reset(settle_steps=200)
     m, d = b.model, b.data

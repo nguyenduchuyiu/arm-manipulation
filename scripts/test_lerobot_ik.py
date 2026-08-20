@@ -105,8 +105,8 @@ def main() -> None:
     target_xyz = fk_xyz + np.array([0.0, 0.0, 0.03])
     print("Target XYZ:", target_xyz)
 
-    low = env.action_space.low[:5].astype(np.float64)
-    high = env.action_space.high[:5].astype(np.float64)
+    low = env.control_low[:5].astype(np.float64)
+    high = env.control_high[:5].astype(np.float64)
     rng = np.random.default_rng(0)
 
     # Closed-loop Cartesian control: mỗi step đọc joint thật, FK-search lại
@@ -135,9 +135,9 @@ def main() -> None:
         last_cmd_q = arm_command
         last_residual = residual
 
-        action = np.concatenate([arm_command, [gripper_target]])
-        action = np.clip(action, env.action_space.low, env.action_space.high)
-        observation, _, terminated, truncated, _ = env.step(action.astype(np.float32))
+        control = np.concatenate([arm_command, [gripper_target]])
+        action = env.control_to_action(control)
+        observation, _, terminated, truncated, _ = env.step(action)
 
         if terminated or truncated:
             break
