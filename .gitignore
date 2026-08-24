@@ -8,3 +8,5 @@ venv/
 *.mp4
 /data
 *.log
+/LIBERO/
+/SimVLA/
