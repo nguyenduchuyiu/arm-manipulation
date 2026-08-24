@@ -14,9 +14,12 @@ class NexArmEnv(gym.Env):
 
     Action
     ------
-    Normalized absolute position targets in [-1, 1] for six actuators:
-      joint_1 ... joint_5, right jaw. For the gripper, +1 is fully open
-      and -1 is fully closed.
+    LIBERO-style normalized end-effector delta command:
+      [dx, dy, dz, dax, day, daz, gripper].
+
+    Translation is scaled to +/-5 cm and axis-angle rotation to +/-0.5 rad
+    per control step. Deltas use the fixed robot-base frame. For the gripper,
+    +1 is fully open and -1 is fully closed.
 
     Observation
     -----------
@@ -58,6 +61,11 @@ class NexArmEnv(gym.Env):
         settle_steps: int = 200,
         randomize_object: bool = True,
         object_xy_noise: float = 0.025,
+        max_position_delta: float = 0.05,
+        max_rotation_delta: float = 0.5,
+        ik_damping: float = 0.05,
+        max_joint_delta: float = 0.15,
+        orientation_weight: float = 0.2,
         render_mode: str | None = "rgb_array",
     ) -> None:
         super().__init__()
@@ -67,6 +75,15 @@ class NexArmEnv(gym.Env):
 
         if frame_skip < 1:
             raise ValueError("frame_skip must be >= 1")
+
+        if min(
+            max_position_delta,
+            max_rotation_delta,
+            ik_damping,
+            max_joint_delta,
+            orientation_weight,
+        ) <= 0:
+            raise ValueError("EE controller scales must be positive")
 
         self.scene_path = Path(scene_path).expanduser().resolve()
         if not self.scene_path.exists():
@@ -79,6 +96,11 @@ class NexArmEnv(gym.Env):
         self.settle_steps = int(settle_steps)
         self.randomize_object = bool(randomize_object)
         self.object_xy_noise = float(object_xy_noise)
+        self.max_position_delta = float(max_position_delta)
+        self.max_rotation_delta = float(max_rotation_delta)
+        self.ik_damping = float(ik_damping)
+        self.max_joint_delta = float(max_joint_delta)
+        self.orientation_weight = float(orientation_weight)
         self.render_mode = render_mode
 
         self.model = mujoco.MjModel.from_xml_path(str(self.scene_path))
@@ -146,7 +168,7 @@ class NexArmEnv(gym.Env):
         self.action_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(6,),
+            shape=(7,),
             dtype=np.float32,
         )
 
@@ -190,7 +212,10 @@ class NexArmEnv(gym.Env):
             [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             dtype=np.float32,
         )
-        self.home_action = self.control_to_action(self.home_control)
+        self.home_action = np.array(
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            dtype=np.float32,
+        )
 
         self.object_default_position = np.array(
             [0.539, -0.18, 0.016],
@@ -219,23 +244,45 @@ class NexArmEnv(gym.Env):
     def control_dt(self) -> float:
         return self.simulation_dt * self.frame_skip
 
-    def action_to_control(self, action: np.ndarray) -> np.ndarray:
-        action = np.asarray(action, dtype=np.float32)
-        if action.shape != (6,):
-            raise ValueError(f"Expected action shape (6,), got {action.shape}")
-        normalized = np.clip(action, -1.0, 1.0)
-        return self.control_low + np.float32(0.5) * (
-            normalized + np.float32(1.0)
-        ) * (self.control_high - self.control_low)
+    def _ee_delta_to_joint_delta(self, action: np.ndarray) -> np.ndarray:
+        jacobian_position = np.zeros((3, self.model.nv), dtype=np.float64)
+        jacobian_rotation = np.zeros((3, self.model.nv), dtype=np.float64)
+        mujoco.mj_jacSite(
+            self.model,
+            self.data,
+            jacobian_position,
+            jacobian_rotation,
+            self.grasp_site_id,
+        )
 
-    def control_to_action(self, control: np.ndarray) -> np.ndarray:
-        control = np.asarray(control, dtype=np.float32)
-        if control.shape != (6,):
-            raise ValueError(f"Expected control shape (6,), got {control.shape}")
-        control = np.clip(control, self.control_low, self.control_high)
-        return np.float32(2.0) * (
-            control - self.control_low
-        ) / (self.control_high - self.control_low) - np.float32(1.0)
+        arm_dofs = self.actuated_qvel_addresses[:5]
+        jacobian = np.vstack(
+            (
+                jacobian_position[:, arm_dofs],
+                self.orientation_weight * jacobian_rotation[:, arm_dofs],
+            )
+        )
+        ee_delta = np.concatenate(
+            (
+                action[:3] * self.max_position_delta,
+                self.orientation_weight * action[3:6] * self.max_rotation_delta,
+            )
+        )
+        system = jacobian.T @ jacobian + self.ik_damping**2 * np.eye(5)
+        joint_delta = np.linalg.solve(system, jacobian.T @ ee_delta)
+        return np.clip(joint_delta, -self.max_joint_delta, self.max_joint_delta)
+
+    def _apply_ee_action(self, action: np.ndarray) -> None:
+        self._arm_target = np.clip(
+            self._arm_target + self._ee_delta_to_joint_delta(action),
+            self.control_low[:5],
+            self.control_high[:5],
+        )
+        gripper_control = self.control_low[5] + 0.5 * (
+            1.0 - float(action[6])
+        ) * (self.control_high[5] - self.control_low[5])
+        self.data.ctrl[:5] = self._arm_target
+        self.data.ctrl[5] = gripper_control
 
     def _name(self, object_type: mujoco.mjtObj, object_id: int) -> str:
         name = mujoco.mj_id2name(self.model, object_type, object_id)
@@ -360,6 +407,7 @@ class NexArmEnv(gym.Env):
 
         self.data.qpos[self.actuated_qpos_addresses] = self.home_control
         self.data.ctrl[:] = self.home_control
+        self._arm_target = self.home_control[:5].astype(np.float64).copy()
 
         self._reset_object()
 
@@ -396,7 +444,8 @@ class NexArmEnv(gym.Env):
                 f"got {action.shape}"
             )
 
-        self.data.ctrl[:] = self.action_to_control(action)
+        action = np.clip(action, self.action_space.low, self.action_space.high)
+        self._apply_ee_action(action)
 
         for _ in range(self.frame_skip):
             mujoco.mj_step(self.model, self.data)

@@ -1,12 +1,4 @@
-"""Closed-loop Cartesian control using FK search (no IK solver).
-
-Instead of lerobot inverse_kinematics, the joint command for each desired
-Cartesian target is found by random-restart + hill-climb over the actuator
-range, scoring each candidate with lerobot RobotKinematics.forward_kinematics.
-Pure kinematic FK: no MuJoCo physics clone, no gravity settling. Sag is
-compensated by the closed loop, which re-reads the true joints and re-searches
-each step (warm-started from the previous command).
-"""
+"""Check URDF/MuJoCo frame agreement and the LIBERO-style EE delta action."""
 from __future__ import annotations
 
 import mujoco
@@ -14,48 +6,6 @@ import numpy as np
 
 from controllers.nexarm_ik import NexArmIK
 from envs.nexarm_env import NexArmEnv
-
-
-FK_TOL_M = 1e-3
-RANDOM_RESTARTS = 200
-HILL_STEP0 = 0.1
-
-
-def fk_search(
-    ik: NexArmIK,
-    target_xyz: np.ndarray,
-    q0: np.ndarray,
-    low: np.ndarray,
-    high: np.ndarray,
-    rng: np.random.Generator,
-) -> tuple[np.ndarray, float]:
-    """Return arm q whose lerobot-FK gripper-base position reaches target_xyz."""
-    def err(q: np.ndarray) -> float:
-        return float(np.linalg.norm(ik.forward_kinematics(q)[:3, 3] - target_xyz))
-
-    q = np.clip(q0, low, high)
-    best_err = err(q)
-    for _ in range(RANDOM_RESTARTS):
-        sample = rng.uniform(low, high)
-        e = err(sample)
-        if e < best_err:
-            best_err, q = e, sample.copy()
-
-    step = HILL_STEP0
-    while best_err > FK_TOL_M and step > 1e-4:
-        improved = False
-        for j in range(5):
-            for d in (-step, step):
-                cand = q.copy()
-                cand[j] = float(np.clip(q[j] + d, low[j], high[j]))
-                if cand[j] == q[j]:
-                    continue
-                e = err(cand)
-                if e < best_err:
-                    best_err, q, improved = e, cand, True
-        if not improved:
-            step /= 2.0
-    return q, best_err
 
 
 def smoothstep(value: float) -> float:
@@ -98,45 +48,29 @@ def main() -> None:
     if frame_error > 5e-3:
         raise RuntimeError(
             "URDF and MuJoCo frames differ by more than 5 mm. "
-            "Do not run FK search until joint/frame conventions are fixed."
+            "Fix joint/frame conventions before using EE delta control."
         )
 
     # Yêu cầu gripper-base đi lên 3 cm.
     target_xyz = fk_xyz + np.array([0.0, 0.0, 0.03])
     print("Target XYZ:", target_xyz)
 
-    low = env.control_low[:5].astype(np.float64)
-    high = env.control_high[:5].astype(np.float64)
-    rng = np.random.default_rng(0)
-
-    # Closed-loop Cartesian control: mỗi step đọc joint thật, FK-search lại
-    # với desired_xyz nội suy, rồi gửi joint target mới (warm-start từ lệnh trước).
+    # Closed-loop Cartesian control through the LIBERO-style EE delta action.
     start_xyz = fk_xyz.copy()
-    gripper_target = float(env.data.ctrl[5])
-    prev_q = current_arm_qpos.copy()
-    last_cmd_q = None
-    last_residual = None
 
     for step in range(150):
         alpha = smoothstep((step + 1) / 150)
         desired_xyz = start_xyz + alpha * (target_xyz - start_xyz)
 
         current_arm_qpos = observation["observation.state"][:5].astype(np.float64)
-
-        arm_command, residual = fk_search(
-            ik=ik,
-            target_xyz=desired_xyz,
-            q0=prev_q,
-            low=low,
-            high=high,
-            rng=rng,
+        current_xyz = ik.forward_kinematics(current_arm_qpos)[:3, 3]
+        action = np.zeros(7, dtype=np.float32)
+        action[:3] = np.clip(
+            (desired_xyz - current_xyz) / env.max_position_delta,
+            -1.0,
+            1.0,
         )
-        prev_q = arm_command.copy()
-        last_cmd_q = arm_command
-        last_residual = residual
-
-        control = np.concatenate([arm_command, [gripper_target]])
-        action = env.control_to_action(control)
+        action[6] = 1.0
         observation, _, terminated, truncated, _ = env.step(action)
 
         if terminated or truncated:
@@ -144,14 +78,8 @@ def main() -> None:
 
     final_arm_qpos = observation["observation.state"][:5].astype(np.float64)
     final_xyz = ik.forward_kinematics(final_arm_qpos)[:3, 3]
-    cmd_xyz = ik.forward_kinematics(last_cmd_q)[:3, 3]
-
-    print("FK-search command q:", last_cmd_q)
-    print("FK-search residual (FK-only error):", last_residual)
     print("Final arm qpos:     ", final_arm_qpos)
-    print("Joint tracking error (cmd - actual):", last_cmd_q - final_arm_qpos)
     print("Target XYZ:", target_xyz)
-    print("Commanded XYZ (FK of cmd):", cmd_xyz)
     print("Final XYZ (FK of actual):", final_xyz)
     print(
         "Cartesian error (target - actual FK):",

@@ -37,6 +37,7 @@ import imageio.v3 as iio
 import mujoco
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -65,6 +66,8 @@ GRIPPER_CLOSED_RAW = 1195.0
 LIFT_HEIGHT = 0.08
 SUCCESS_HOLD_STEPS = 10
 ARM_NAMES = list(JOINT_NAMES[:5])
+MAX_POSITION_DELTA = 0.05
+MAX_ROTATION_DELTA = 0.5
 
 
 def position_ik(backend, gripper_base_id, addrs, target, q0):
@@ -113,9 +116,14 @@ def run_pick_episode(
 
     cube_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "cube")
     gripper_base = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link_6_gripper_base")
-    if cube_body < 0 or gripper_base < 0:
-        raise RuntimeError("scene must define body 'cube' and body 'link_6_gripper_base'")
+    grasp_site = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "grasp_site")
+    if cube_body < 0 or gripper_base < 0 or grasp_site < 0:
+        raise RuntimeError("scene must define cube, gripper base, and grasp site")
     addrs = np.array([model.jnt_qposadr[backend._joint_ids[n]] for n in ARM_NAMES], dtype=int)
+    state_addrs = np.array(
+        [model.jnt_qposadr[backend._joint_ids[name]] for name in JOINT_NAMES],
+        dtype=int,
+    )
     low = np.array([backend._control_range(n)[0] for n in ARM_NAMES], dtype=np.float64)
     high = np.array([backend._control_range(n)[1] for n in ARM_NAMES], dtype=np.float64)
 
@@ -159,13 +167,15 @@ def run_pick_episode(
 
     front = [backend.render("front")]
     wrist = [backend.render("wrist")]
-    states = [
-        np.array(
-            [backend.joint_positions()[f"{name}.pos"] for name in JOINT_NAMES],
-            dtype=np.float32,
-        )
+    positions = backend.joint_positions()
+    states = [np.asarray(data.qpos[state_addrs], dtype=np.float32).copy()]
+    states_raw = [
+        np.array([positions[f"{name}.pos"] for name in JOINT_NAMES], dtype=np.float32)
     ]
     actions = []
+    actions_raw = []
+    previous_ee_position = np.asarray(data.site_xpos[grasp_site], dtype=np.float64).copy()
+    previous_ee_rotation = np.asarray(data.site_xmat[grasp_site], dtype=np.float64).reshape(3, 3).copy()
 
     cmd = q0.copy()
     lift_steps = 0
@@ -193,13 +203,33 @@ def run_pick_episode(
             backend.step(action)
             front.append(backend.render("front"))
             wrist.append(backend.render("wrist"))
-            actions.append(
-                np.array([action[f"{feature}.pos"] for feature in JOINT_NAMES], dtype=np.float32)
+            raw_action = np.array(
+                [action[f"{feature}.pos"] for feature in JOINT_NAMES], dtype=np.float32
             )
+            current_ee_position = np.asarray(data.site_xpos[grasp_site], dtype=np.float64).copy()
+            current_ee_rotation = np.asarray(data.site_xmat[grasp_site], dtype=np.float64).reshape(3, 3).copy()
+            delta_position = (current_ee_position - previous_ee_position) / MAX_POSITION_DELTA
+            delta_rotation = Rotation.from_matrix(
+                current_ee_rotation @ previous_ee_rotation.T
+            ).as_rotvec() / MAX_ROTATION_DELTA
+            gripper_action = 2.0 * (
+                float(raw_action[5]) - GRIPPER_CLOSED_RAW
+            ) / (GRIPPER_OPEN_RAW - GRIPPER_CLOSED_RAW) - 1.0
+            actions.append(
+                np.clip(
+                    np.concatenate((delta_position, delta_rotation, [gripper_action])),
+                    -1.0,
+                    1.0,
+                ).astype(np.float32)
+            )
+            actions_raw.append(raw_action)
             positions = backend.joint_positions()
-            states.append(
+            states.append(np.asarray(data.qpos[state_addrs], dtype=np.float32).copy())
+            states_raw.append(
                 np.array([positions[f"{feature}.pos"] for feature in JOINT_NAMES], dtype=np.float32)
             )
+            previous_ee_position = current_ee_position
+            previous_ee_rotation = current_ee_rotation
 
             z = float(data.xpos[cube_body][2])
             lift_steps = lift_steps + 1 if z > LIFT_HEIGHT else 0
@@ -216,7 +246,9 @@ def run_pick_episode(
     np.savez_compressed(
         out / "pick_episode.npz",
         observation_state=np.asarray(states),
+        observation_state_raw=np.asarray(states_raw),
         action=np.asarray(actions),
+        action_raw=np.asarray(actions_raw),
         success=np.asarray(success),
         fps=np.asarray(FPS),
     )

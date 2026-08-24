@@ -108,6 +108,9 @@
     <joint name="gripper_jaws_opposed_1_to_1" joint1="right_jaw_slide_joint" joint2="left_jaw_slide_joint" polycoef="0 -1 0 0 0" solref="0.002 1" solimp="0.99 0.999 0.0005 0.5 2" />
     <joint name="gripper_pinion_to_right_jaw" joint1="gripper_pinion_joint" joint2="right_jaw_slide_joint" polycoef="0 246.399423811 0 0 0" solref="0.002 1" solimp="0.99 0.999 0.0005 0.5 2" />
   </equality>
+  <contact>
+    <exclude name="exclude_base_link_1" body1="base_link" body2="link_1" />
+  </contact>
   <actuator>
     <position name="joint_1_base_to_link_1_control" class="nexarm" joint="joint_1_base_to_link_1" ctrllimited="true" ctrlrange="-2.35619449019 2.35619449019" />
     <position name="joint_2_link_1_to_link_2_control" class="nexarm" joint="joint_2_link_1_to_link_2" ctrllimited="true" ctrlrange="-2.09439510239 2.09439510239" />

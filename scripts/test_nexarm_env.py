@@ -24,6 +24,14 @@ def main() -> None:
     observation, info = env.reset(seed=0)
 
     assert env.observation_space.contains(observation)
+    assert env.action_space.shape == (7,)
+
+    closed_action = env.home_action.copy()
+    closed_action[-1] = -1.0
+    env._apply_ee_action(closed_action)
+    assert np.isclose(env.data.ctrl[5], env.control_high[5])
+    env._apply_ee_action(env.home_action)
+    assert np.isclose(env.data.ctrl[5], env.control_low[5])
 
     print("Action space:", env.action_space)
     print("Control dt:", env.control_dt)
@@ -67,6 +75,16 @@ def main() -> None:
     print("Final state:", observation["observation.state"])
     print("Final object:", info["object_position"])
     print("Final contacts:", info["ncon"])
+
+    start_grasp_position = info["grasp_position"].copy()
+    ee_action = env.home_action.copy()
+    ee_action[0] = 0.2
+    for _ in range(5):
+        observation, _, terminated, truncated, info = env.step(ee_action)
+        if terminated or truncated:
+            break
+    assert np.linalg.norm(info["grasp_position"] - start_grasp_position) > 1e-3
+
     print("Saved images under outputs/")
 
     env.close()

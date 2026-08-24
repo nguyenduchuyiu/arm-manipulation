@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="NexArm LIBERO close top drawer">
+  <include file="robot.xml" />
+
+  <visual>
+    <global offwidth="384" offheight="384" />
+    <headlight diffuse="0.55 0.55 0.55" ambient="0.35 0.35 0.35" specular="0.1 0.1 0.1" />
+  </visual>
+
+  <asset>
+    <texture name="cabinet_wood" type="2d" file="../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_wood.png" />
+    <texture name="cabinet_metal" type="2d" file="../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/metal.png" />
+    <material name="cabinet_wood_mat" texture="cabinet_wood" reflectance="0.2" />
+    <material name="cabinet_metal_mat" texture="cabinet_metal" reflectance="0.5" />
+
+    <mesh name="cabinet_base_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_base/visual/white_cabinet_base_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_top_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_top/visual/white_cabinet_top_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_top_handle_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_top_handle/visual/white_cabinet_top_handle_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_middle_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_middle/visual/white_cabinet_middle_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_middle_handle_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_middle_handle/visual/white_cabinet_middle_handle_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_bottom_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_bottom/visual/white_cabinet_bottom_vis.msh" scale="0.05 0.05 0.05" />
+    <mesh name="cabinet_bottom_handle_vis" file="../../../LIBERO/libero/libero/assets/articulated_objects/white_cabinet/white_cabinet_bottom_handle/visual/white_cabinet_bottom_handle_vis.msh" scale="0.05 0.05 0.05" />
+  </asset>
+
+  <worldbody>
+    <light name="key_light" pos="0.45 -0.45 1.2" dir="0 0 -1" directional="true" />
+    <geom name="floor" type="plane" size="1.5 1.5 0.05" rgba="0.78 0.76 0.72 1" friction="1 0.005 0.0001" contype="2" conaffinity="2" />
+
+    <body name="cabinet" pos="0.536 -0.35 0.09" quat="0 0 0 1">
+      <geom name="cabinet_base_visual" type="mesh" mesh="cabinet_base_vis" material="cabinet_wood_mat" contype="0" conaffinity="0" group="2" />
+      <geom name="cabinet_back_collision" type="box" size="0.00193 0.10453 0.11106" pos="0.00397 0.10954 0.1135" quat="0.499879 -0.501039 -0.500119 0.498959" />
+      <geom name="cabinet_bottom_collision" type="box" size="0.00199 0.0896 0.12277" pos="0.00405 0.01635 0.00686" quat="0.707921 0.000650001 0.706291 -0.000650001" />
+      <geom name="cabinet_left_collision" type="box" size="0.00517 0.09542 0.10584" pos="-0.11216 0.01625 0.11426" quat="0 0 1 0" />
+      <geom name="cabinet_right_collision" type="box" size="0.00517 0.09542 0.10584" pos="0.11898 0.01625 0.11426" quat="0 1 0 0" />
+      <geom name="cabinet_rear_collision" type="box" size="0.00231 0.10584 0.11912" pos="0.00211 0.10938 0.11426" quat="0.49997 0.49997 -0.50003 -0.50003" />
+      <geom name="cabinet_shelf_top_collision" type="box" size="0.00085 0.08935 0.11168" pos="0.00376 0.01868 0.14935" quat="0.707921 0.000650001 0.706291 -0.000650001" />
+      <geom name="cabinet_shelf_bottom_collision" type="box" size="0.00085 0.08935 0.11168" pos="0.00408 0.01868 0.00933" quat="0.000650001 -0.707921 0.000650001 0.706291" />
+      <geom name="cabinet_shelf_middle_collision" type="box" size="0.00085 0.08935 0.11168" pos="0.00392 0.01868 0.07928" quat="0.707921 0.000650001 0.706291 -0.000650001" />
+      <geom name="cabinet_top_collision" type="box" size="0.00142 0.09409 0.12729" pos="0.00394 0.01577 0.22157" quat="0.707107 0 0.707107 0" />
+
+      <body name="top_drawer">
+        <inertial pos="0 0 0" mass="3" diaginertia="1 1 1" />
+        <joint name="top_drawer_joint" axis="0 1 0" type="slide" range="-0.16 0.01" damping="50" />
+        <geom name="top_drawer_visual" type="mesh" mesh="cabinet_top_vis" material="cabinet_wood_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="top_drawer_front_collision" type="box" size="0.00271 0.03427 0.10934" pos="0.00334 -0.07524 0.18309" quat="0.5 0.5 -0.5 -0.5" />
+        <geom name="top_drawer_side_a_collision" type="box" size="0.00356 0.03214 0.10679" pos="0.00334 -0.06839 0.18358" quat="0.5 0.5 0.5 0.5" />
+        <geom name="top_drawer_side_b_collision" type="box" size="0.00356 0.03214 0.10679" pos="0.00334 0.09077 0.18358" quat="0.5 0.5 0.5 0.5" />
+        <geom name="top_drawer_left_collision" type="box" size="0.00241 0.03165 0.08148" pos="-0.10191 0.01105 0.18358" quat="0.707106 0.707106 -0.00114999 -0.00114999" />
+        <geom name="top_drawer_right_collision" type="box" size="0.00241 0.03133 0.08148" pos="0.10894 0.01105 0.18358" quat="0.707106 0.707106 -0.00114999 -0.00114999" />
+        <geom name="top_drawer_floor_collision" type="box" size="0.00401 0.08095 0.10696" pos="0.00348 0.01048 0.15514" quat="0.707107 0 0.707107 0" />
+        <geom name="top_handle_visual" type="mesh" mesh="cabinet_top_handle_vis" material="cabinet_metal_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="top_handle_collision" type="box" size="0.0077 0.00817 0.04445" pos="-0.00278 -0.10161 0.18393" quat="0.5 0.5 -0.5 -0.5" friction="1.5 0.01 0.001" />
+        <geom name="top_handle_mount_a_collision" type="box" size="0.00507 0.00552 0.01057" pos="0.02916 -0.08348 0.18393" quat="0.707107 0.707107 0 0" />
+        <geom name="top_handle_mount_b_collision" type="box" size="0.00507 0.0056 0.01057" pos="-0.0356 -0.08348 0.18393" quat="0.707107 0.707107 0 0" />
+        <site name="top_handle_site" pos="-0.00278 -0.110 0.18393" size="0.005" rgba="1 0 0 0" />
+      </body>
+
+      <body name="middle_drawer">
+        <geom name="middle_drawer_visual" type="mesh" mesh="cabinet_middle_vis" material="cabinet_wood_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="middle_handle_visual" type="mesh" mesh="cabinet_middle_handle_vis" material="cabinet_metal_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="middle_drawer_front_collision" type="box" size="0.00271 0.03427 0.10934" pos="0.00334 -0.07524 0.11338" quat="0.5 0.5 -0.5 -0.5" />
+        <geom name="middle_handle_collision" type="box" size="0.0077 0.00817 0.04445" pos="-0.00278 -0.10161 0.11041" quat="0.5 0.5 -0.5 -0.5" />
+      </body>
+
+      <body name="bottom_drawer">
+        <geom name="bottom_drawer_visual" type="mesh" mesh="cabinet_bottom_vis" material="cabinet_wood_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="bottom_handle_visual" type="mesh" mesh="cabinet_bottom_handle_vis" material="cabinet_metal_mat" contype="0" conaffinity="0" group="2" />
+        <geom name="bottom_drawer_front_collision" type="box" size="0.00271 0.03427 0.10934" pos="0.00334 -0.07524 0.04476" quat="0.5 0.5 -0.5 -0.5" />
+        <geom name="bottom_handle_collision" type="box" size="0.0077 0.00817 0.04445" pos="-0.00278 -0.10161 0.04114" quat="0.5 0.5 -0.5 -0.5" />
+      </body>
+    </body>
+
+    <camera name="front" mode="targetbody" target="cabinet" pos="0.92 0.68 0.53" fovy="48" />
+  </worldbody>
+</mujoco>
