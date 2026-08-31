@@ -59,6 +59,15 @@ conda run -n mujoco-vla python scripts/render_nexarm_libero_retargets.py
 The 50 labeled MP4 files and their success manifest are written under
 `outputs/nexarm_libero_50/`.
 
+Retarget all 500 LIBERO-Spatial demonstrations with physical collision:
+
+```bash
+conda run -n mujoco-vla python scripts/retarget_libero_spatial.py
+```
+
+The 10 NexArm HDF5 files are written to `data/nexarm_libero_spatial`; train on
+episodes whose `success` attribute is true.
+
 Replay all original Panda demonstrations with LIBERO's generated BDDL scene:
 
 ```bash

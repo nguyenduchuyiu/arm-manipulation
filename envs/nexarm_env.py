@@ -279,7 +279,7 @@ class NexArmEnv(gym.Env):
             self.control_high[:5],
         )
         gripper_control = self.control_low[5] + 0.5 * (
-            1.0 - float(action[6])
+            1.0 + float(action[6])
         ) * (self.control_high[5] - self.control_low[5])
         self.data.ctrl[:5] = self._arm_target
         self.data.ctrl[5] = gripper_control

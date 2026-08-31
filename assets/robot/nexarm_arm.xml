@@ -1,0 +1,64 @@
+<mujoco model="nexarm_arm">
+  <compiler autolimits="true"/>
+  <asset>
+    <mesh name="base_link" file="meshes/base_link.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link_1" file="meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link_2" file="meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link_3" file="meshes/link_3.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link_4" file="meshes/link_4.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="link_5" file="meshes/link_5.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="cam_mount" file="meshes/cam_mount.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+  <worldbody>
+    <body name="base" pos="0 0 0">
+      <geom name="base_visual" type="mesh" mesh="base_link" group="1" contype="0" conaffinity="0"/>
+      <geom name="base_collision" type="box" pos="0.53937 0.06397 0.030" size="0.050 0.060 0.030" group="0"/>
+      <inertial mass="0.786700972741" pos="0.539380271544 0.0638369908334 0.0185753932111" fullinertia="0.00139802033416 0.00144056236845 0.0018724205137 -4.47649731558e-07 4.8308012353e-09 -1.18756099678e-05"/>
+      <body name="link_1">
+        <joint name="joint_1" pos="0.539369022999 0.0639727628473 0.049" axis="0 0 -1" range="-2.35619449019 2.35619449019" limited="true" damping="0.2" frictionloss="0.1" armature="0.005"/>
+        <geom name="link_1_visual" type="mesh" mesh="link_1" group="1" contype="0" conaffinity="0"/>
+        <geom name="link_1_collision" type="box" pos="0.53937 0.06397 0.076" size="0.044 0.036 0.040" group="0"/>
+        <inertial mass="0.729809704164" pos="0.539368978002 0.0635116057815 0.071484812844" fullinertia="0.00051963807044 0.000637210660821 0.000641128073206 -1.55037780909e-06 -1.34409444286e-09 -5.03362157091e-06"/>
+        <body name="link_2">
+          <joint name="joint_2" pos="0.574469022999 0.0639727628408 0.106445070665" axis="-1 0 0" range="-2.09439510239 2.09439510239" limited="true" damping="0.2" frictionloss="0.1" armature="0.005"/>
+          <geom name="link_2_visual" type="mesh" mesh="link_2" group="1" contype="0" conaffinity="0"/>
+          <geom name="link_2_collision" type="capsule" fromto="0.57447 0.06397 0.10645 0.51944 0.19693 0.29168" size="0.032" group="0"/>
+          <inertial mass="0.499489573358" pos="0.540189023978 0.144420872296 0.188150680363" fullinertia="0.00223280503893 0.00128349391446 0.0011840260217 -6.38518145024e-12 -7.23148332327e-12 -0.00107951664549"/>
+          <body name="link_3">
+            <joint name="joint_3" pos="0.519439024469 0.196934090904 0.291683736154" axis="-1 0 0" range="-2.35619449019 2.35619449019" limited="true" damping="0.2" frictionloss="0.1" armature="0.005"/>
+            <geom name="link_3_visual" type="mesh" mesh="link_3" group="1" contype="0" conaffinity="0"/>
+            <geom name="link_3_collision" type="capsule" fromto="0.51944 0.19693 0.29168 0.51912 0.06552 0.23041" size="0.024" group="0"/>
+            <inertial mass="0.502797979401" pos="0.538186644887 0.13328554092 0.262084919136" fullinertia="0.00148648515676 0.000325281319953 0.00124573640081 -1.71226057479e-06 -6.54549700107e-07 -0.000548157407294"/>
+            <body name="link_4">
+              <joint name="joint_4" pos="0.519118832515 0.0655199672431 0.230406053572" axis="1 0 0" range="-1.74532925199 1.74532925199" limited="true" damping="0.2" frictionloss="0.1" armature="0.005"/>
+              <geom name="link_4_visual" type="mesh" mesh="link_4" group="1" contype="0" conaffinity="0"/>
+              <geom name="link_4_collision" type="capsule" fromto="0.51912 0.06552 0.23041 0.53937 0.01829 0.23042" size="0.024" group="0"/>
+              <inertial mass="0.115068953526" pos="0.539217677946 0.0412813965935 0.225809887954" fullinertia="3.83442340902e-05 3.79383592642e-05 5.09344113524e-05 3.05302531805e-07 -1.84760289414e-08 -2.89291259098e-06"/>
+              <body name="link_5">
+                <joint name="joint_5" pos="0.539368637629 0.0182856141095 0.23042272303" axis="0 -1 0" range="-3.14159265359 3.14159265359" limited="true" damping="0.2" frictionloss="0.1" armature="0.005"/>
+                <geom name="link_5_visual" type="mesh" mesh="link_5" group="1" contype="0" conaffinity="0"/>
+                <geom name="link_5_collision" type="capsule" fromto="0.53937 0.01829 0.23042 0.53937 -0.02102 0.23060" size="0.022" group="0"/>
+                <inertial mass="0.0877645173099" pos="0.539308600819 0.00213395624175 0.226224940969" fullinertia="1.61873455873e-05 1.81853478741e-05 1.80887992735e-05 1.9977723024e-08 -7.53848706523e-08 -3.82108689215e-07"/>
+              </body>
+              <body name="cam_mount">
+                <geom name="cam_mount_visual" type="mesh" mesh="cam_mount" group="1" contype="0" conaffinity="0"/>
+                <camera name="eye_in_hand" mode="fixed" pos="0.539 0.015 0.295" xyaxes="0 -0.485643 0.874157 1 0 0" fovy="70"/>
+                <inertial mass="0.128723206864" pos="0.53898118894 0.0126462358897 0.266652488245" fullinertia="1.454636486e-05 6.65139880049e-05 6.72526841822e-05 -1.94818185207e-07 1.76421275768e-08 8.29660447764e-07"/>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude name="exclude_base_link_1" body1="base" body2="link_1"/>
+  </contact>
+  <actuator>
+    <motor name="motor_1" joint="joint_1" ctrlrange="-10 10" ctrllimited="true"/>
+    <motor name="motor_2" joint="joint_2" ctrlrange="-10 10" ctrllimited="true"/>
+    <motor name="motor_3" joint="joint_3" ctrlrange="-8 8" ctrllimited="true"/>
+    <motor name="motor_4" joint="joint_4" ctrlrange="-4 4" ctrllimited="true"/>
+    <motor name="motor_5" joint="joint_5" ctrlrange="-2 2" ctrllimited="true"/>
+  </actuator>
+</mujoco>

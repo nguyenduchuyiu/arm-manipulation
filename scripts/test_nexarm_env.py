@@ -29,9 +29,9 @@ def main() -> None:
     closed_action = env.home_action.copy()
     closed_action[-1] = -1.0
     env._apply_ee_action(closed_action)
-    assert np.isclose(env.data.ctrl[5], env.control_high[5])
-    env._apply_ee_action(env.home_action)
     assert np.isclose(env.data.ctrl[5], env.control_low[5])
+    env._apply_ee_action(env.home_action)
+    assert np.isclose(env.data.ctrl[5], env.control_high[5])
 
     print("Action space:", env.action_space)
     print("Control dt:", env.control_dt)
