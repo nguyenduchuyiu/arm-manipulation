@@ -1,8 +1,8 @@
-"""Retarget the first LIBERO-Spatial bowl task to NexArm."""
+"""Retarget LIBERO-Spatial bowl tasks to NexArm."""
 from __future__ import annotations
 
-import json
 import copy
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -16,9 +16,9 @@ from scipy.spatial.transform import Rotation
 
 from retarget_libero_drawer import (
     CONTROL_STEPS_PER_RECORD,
-    MAX_POSITION_DELTA,
     RECORD_HZ,
     arm_addresses,
+    joint_delta,
     object_id,
     render,
     site_position,
@@ -28,11 +28,20 @@ SOURCE = Path("data/libero_spatial")
 OUTPUT = Path("data/nexarm_libero_spatial")
 ROBOT = Path("assets/robot/robot.xml")
 VIDEO_DIR = Path("outputs/nexarm_libero_spatial")
-IMAGE_SIZE = 128
+IMAGE_SIZE = 256
 VIDEO_SIZE = 768
-OBJECT_SCALE = np.full(3, 0.25 / 0.7)
-TABLE_TOP = 0.9
-HELD_BOWL_OFFSET = np.array([0.012, 0.002])
+SCENE_SCALE = 0.45
+# The target bowl scales physically; other bodies retain source mass so the
+# unscaled robot cannot launch lightweight fixtures and receptacles on contact.
+BOWL_MASS_SCALE = SCENE_SCALE**3
+TABLE_TOP = 0.9 * SCENE_SCALE
+EXCLUDED_TASK_MARKERS = (
+    "in_the_top_drawer",
+    "on_the_ramekin",
+    "on_the_wooden_cabinet",
+)
+MAX_RECORDED_JOINT_DELTA = 0.15
+ACTION_CHUNK_SIZE = 12
 LIBERO_ASSETS = Path("LIBERO/libero/libero/assets").resolve()
 ROBOSUITE_ASSETS = Path(
     "/opt/homebrew/Caskroom/miniforge/base/envs/libero-replay/lib/python3.10/"
@@ -53,39 +62,37 @@ def remap_assets(xml):
     )
 
 
-def scale_free_objects(root):
-    """Scale movable LIBERO objects while retaining their original collision meshes."""
-    mesh_names = set()
-    free_bodies = []
-    for body in root.findall(".//worldbody//body"):
-        joint = body.find("joint[@type='free']")
-        if joint is None:
-            continue
-        free_bodies.append(joint.attrib["name"])
-        for element in body.iter():
-            if "mesh" in element.attrib:
-                mesh_names.add(element.attrib["mesh"])
-            for attribute in ("pos", "size", "fromto"):
-                if attribute in element.attrib:
-                    values = numbers(element.attrib[attribute])
-                    if len(values) == 1:
-                        scaled = values * OBJECT_SCALE[0]
-                    else:
-                        scaled = (values.reshape(-1, 3) * OBJECT_SCALE).ravel()
-                    element.set(
-                        attribute,
-                        " ".join(f"{x:.9g}" for x in scaled),
-                    )
-            if "density" in element.attrib:
-                element.set(
-                    "density",
-                    str(float(element.attrib["density"]) / np.prod(OBJECT_SCALE)),
-                )
+def scale_scene(root):
+    """Uniformly scale the complete LIBERO scene before inserting NexArm."""
     for mesh in root.findall("./asset/mesh"):
-        if mesh.get("name") in mesh_names:
-            scale = numbers(mesh.get("scale", "1 1 1")) * OBJECT_SCALE
-            mesh.set("scale", " ".join(map(str, scale)))
-    return free_bodies
+        scale = numbers(mesh.get("scale", "1 1 1")) * SCENE_SCALE
+        mesh.set("scale", " ".join(map(str, scale)))
+
+    world = root.find("worldbody")
+    for element in world.iter():
+        for attribute in ("pos", "size", "fromto", "margin", "gap"):
+            if attribute in element.attrib:
+                values = numbers(element.attrib[attribute]) * SCENE_SCALE
+                element.set(attribute, " ".join(f"{x:.9g}" for x in values))
+        if element.tag == "joint" and element.get("type") == "slide":
+            element.set(
+                "range",
+                " ".join(f"{x:.9g}" for x in numbers(element.attrib["range"]) * SCENE_SCALE),
+            )
+        if element.tag == "geom" and "density" in element.attrib:
+            mass_scale = (
+                BOWL_MASS_SCALE
+                if element.get("name", "").startswith("akita_black_bowl_1_")
+                else 1.0
+            )
+            density = (
+                float(element.attrib["density"])
+                * mass_scale
+                / SCENE_SCALE**3
+            )
+            element.set("density", f"{density:.9g}")
+
+    return [joint.attrib["name"] for joint in world.findall(".//joint")]
 
 
 def build_model(source):
@@ -101,13 +108,18 @@ def build_model(source):
     if sensor is not None:
         root.remove(sensor)
 
-    free_bodies = scale_free_objects(root)
+    scene_joints = scale_scene(root)
     poses = {}
-    for joint_name in free_bodies:
+    for joint_name in scene_joints:
         joint = mujoco.mj_name2id(original, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         address = original.jnt_qposadr[joint]
-        pose = state_qpos[address : address + 7].copy()
-        pose[2] = TABLE_TOP + (pose[2] - TABLE_TOP) * OBJECT_SCALE[2]
+        joint_type = original.jnt_type[joint]
+        width = 7 if joint_type == mujoco.mjtJoint.mjJNT_FREE else 4 if joint_type == mujoco.mjtJoint.mjJNT_BALL else 1
+        pose = state_qpos[address : address + width].copy()
+        if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+            pose[:3] *= SCENE_SCALE
+        elif joint_type == mujoco.mjtJoint.mjJNT_SLIDE:
+            pose *= SCENE_SCALE
         poses[joint_name] = pose
 
     robot = ET.parse(ROBOT).getroot()
@@ -116,12 +128,7 @@ def build_model(source):
     root.find("asset").extend(copy.deepcopy(list(robot.find("asset"))))
     root.find("default").extend(copy.deepcopy(list(robot.find("default"))))
     base = copy.deepcopy(robot.find("worldbody/body[@name='base_link']"))
-    base_center = np.array([-0.2, 0.25])
-    grasp_vector = poses["akita_black_bowl_1_joint0"][:2] - base_center
-    if np.linalg.norm(grasp_vector) > 0.3:
-        base_center = poses["akita_black_bowl_1_joint0"][:2] - 0.3 * (
-            grasp_vector / np.linalg.norm(grasp_vector)
-        )
+    base_center = np.array([-0.25, 0.1])
     base_pos = np.r_[base_center - np.array([0.53937, 0.06397]), TABLE_TOP]
     base.set("pos", " ".join(map(str, base_pos)))
     world.append(base)
@@ -211,8 +218,24 @@ def bodies_touch(model, data, body_a, body_b):
     return False
 
 
+def joint_action_chunks(joint_states):
+    """Map observation t to future q[t + 1] - q[t] actions."""
+    joint_states = np.asarray(joint_states)
+    step_actions = np.diff(joint_states, axis=0)
+    chunks = np.zeros(
+        (len(joint_states), ACTION_CHUNK_SIZE, joint_states.shape[1]),
+        dtype=joint_states.dtype,
+    )
+    mask = np.zeros((len(joint_states), ACTION_CHUNK_SIZE), dtype=np.uint8)
+    for step in range(len(joint_states) - 1):
+        valid = min(ACTION_CHUNK_SIZE, len(step_actions) - step)
+        chunks[step, :valid] = step_actions[step : step + valid]
+        mask[step, :valid] = 1
+    return chunks, mask
+
+
 def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, poses):
-    xyz = source["obs/ee_pos"][()].copy()
+    xyz = source["obs/ee_pos"][()] * SCENE_SCALE
     xyz[:, 2] = np.clip(xyz[:, 2], TABLE_TOP + 0.014, TABLE_TOP + 0.29)
     source_grip = source["actions"][:, 6]
     close = np.flatnonzero((source_grip[:-1] < 0) & (source_grip[1:] > 0)) + 1
@@ -225,11 +248,12 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
     bowl = poses["akita_black_bowl_1_joint0"][:3].copy()
     plate = poses["plate_1_joint0"][:3].copy()
     grasp_shift = np.r_[bowl[:2] - xyz[c, :2], 0.0]
-    place_shift = np.r_[plate[:2] - HELD_BOWL_OFFSET - xyz[r, :2], 0.0]
+    place_shift = np.r_[plate[:2] - xyz[r, :2], 0.0]
     xyz[: c + 1] += np.linspace(0.0, grasp_shift, c + 1)
     xyz[c + 1 : r + 1] += np.linspace(grasp_shift, place_shift, r - c + 1)[1:]
     xyz[r + 1 :] += place_shift
     xyz = np.r_[xyz[:c], np.repeat(xyz[c : c + 1], 15, axis=0), xyz[c:]]
+    xyz = np.r_[xyz, np.repeat(xyz[-1:], 10, axis=0)]
     grip = np.ones(len(xyz))
     grip[c + 5 : r + 15] = -1.0
     time20 = np.arange(len(xyz)) / RECORD_HZ
@@ -242,7 +266,7 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
     for joint_name, pose in poses.items():
         joint = object_id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
         address = int(model.jnt_qposadr[joint])
-        data.qpos[address : address + 7] = pose
+        data.qpos[address : address + len(pose)] = pose
     data.qpos[bowl_qpos : bowl_qpos + 3] = bowl
     data.qpos[plate_qpos : plate_qpos + 3] = plate
     data.qpos[arm_qpos] = q_start
@@ -253,13 +277,13 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
     for _ in range(100):
         mujoco.mj_step(model, data)
 
-    records = {name: [] for name in ("actions", "front_rgb", "eye_in_hand_rgb", "joint_states", "ee_pos", "ee_ori", "object_pos")}
+    records = {name: [] for name in ("front_rgb", "eye_in_hand_rgb", "joint_states", "ee_pos", "ee_ori", "object_pos")}
     video_frames = []
+    held_offset = np.zeros(2)
     for step in range(len(xyz) - 1):
         target_slice = q100[step * CONTROL_STEPS_PER_RECORD : (step + 1) * CONTROL_STEPS_PER_RECORD]
         current = site_position(data, site)
         grip_action = float(grip[step])
-        records["actions"].append(np.r_[np.clip((xyz[step + 1] - current) / MAX_POSITION_DELTA, -1, 1), np.zeros(3), grip_action])
         records["front_rgb"].append(render(renderer, data, "agentview"))
         records["eye_in_hand_rgb"].append(render(renderer, data, "wrist"))
         if video_renderer is not None:
@@ -270,8 +294,18 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
         records["object_pos"].append(data.qpos[bowl_qpos : bowl_qpos + 3].copy())
         close_fraction = np.clip((step - c - 5) / 5, 0.0, 1.0)
         data.ctrl[grip_act] = -0.0255 * close_fraction if grip_action < 0 else 0.0
+        if grip_action < 0 and data.qpos[bowl_qpos + 2] > bowl[2] + 0.01:
+            observed = data.qpos[bowl_qpos : bowl_qpos + 2] - current[:2]
+            held_offset = 0.8 * held_offset + 0.2 * observed
         for target_q in target_slice:
-            data.ctrl[arm_act] = target_q
+            correction = joint_delta(
+                model, data, site, arm_dofs, np.r_[-held_offset, 0.0]
+            )
+            data.ctrl[arm_act] = np.clip(
+                target_q + correction,
+                model.actuator_ctrlrange[arm_act, 0],
+                model.actuator_ctrlrange[arm_act, 1],
+            )
             for _ in range(5):
                 mujoco.mj_step(model, data)
 
@@ -291,16 +325,25 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
         and final[2] >= plate_final[2]
         and np.linalg.norm(final[:2] - plate_final[:2]) < 0.03
     )
+    records["actions"], records["action_chunk_mask"] = joint_action_chunks(
+        records["joint_states"]
+    )
     return records, video_frames, bool(success), bowl, plate, final, plate_final, contact
 
 
 def main(paths=None, limit=None):
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    for path in paths or sorted(SOURCE.glob("*.hdf5")):
+    paths = paths or sorted(SOURCE.glob("*.hdf5"))
+    paths = [
+        path
+        for path in paths
+        if not any(marker in path.stem for marker in EXCLUDED_TASK_MARKERS)
+    ]
+    for path in paths:
         with h5py.File(path) as src, h5py.File(OUTPUT / path.name, "w") as dst:
             out = dst.create_group("data")
             info = json.loads(src["data"].attrs["problem_info"])
-            out.attrs.update(num_demos=0, total=0, successes=0, problem_info=json.dumps(info), env_args=json.dumps({"robot": "NexArm", "action": "ee_delta", "control_freq": RECORD_HZ, "controller_freq": 100}))
+            out.attrs.update(num_demos=0, total=0, successes=0, problem_info=json.dumps(info), env_args=json.dumps({"robot": "NexArm", "action": "joint_delta_chunk", "action_dim": 6, "action_chunk_size": ACTION_CHUNK_SIZE, "control_freq": RECORD_HZ, "controller_freq": 100}))
             demos = sorted(src["data"], key=lambda name: int(name[5:]))[:limit]
             for name in demos:
                 try:
@@ -329,11 +372,21 @@ def main(paths=None, limit=None):
                 except RuntimeError as error:
                     print(path.stem, name, "ERROR", error, flush=True)
                     continue
-                demo = out.create_group(name)
+                joint_states = np.asarray(records["joint_states"])
+                max_joint_delta = np.max(np.abs(np.diff(joint_states[:, :5], axis=0)))
+                if not success or not np.isfinite(joint_states).all() or max_joint_delta > MAX_RECORDED_JOINT_DELTA:
+                    print(path.stem, name, "SKIP", "success", success, "max_dq", round(float(max_joint_delta), 3), flush=True)
+                    renderer.close()
+                    if video_renderer is not None:
+                        video_renderer.close()
+                    continue
+                output_name = f"demo_{int(out.attrs['num_demos'])}"
+                demo = out.create_group(output_name)
                 n = len(records["actions"])
-                demo.attrs.update(num_samples=n, success=success)
+                demo.attrs.update(num_samples=n, success=True, source_demo=name)
                 for key, values in records.items():
-                    demo.create_dataset(("obs/" if key != "actions" else "") + key, data=np.asarray(values), compression="gzip" if "rgb" in key else None)
+                    prefix = "" if key in ("actions", "action_chunk_mask") else "obs/"
+                    demo.create_dataset(prefix + key, data=np.asarray(values), compression="gzip" if "rgb" in key else None)
                 done = np.zeros(n, dtype=np.uint8)
                 done[-1] = 1
                 demo.create_dataset("dones", data=done)
@@ -364,4 +417,4 @@ def main(paths=None, limit=None):
 
 
 if __name__ == "__main__":
-    main(paths=[sorted(SOURCE.glob("*.hdf5"))[0]], limit=1)
+    main()
