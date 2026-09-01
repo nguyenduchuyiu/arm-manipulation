@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -24,10 +25,11 @@ from retarget_libero_drawer import (
     site_position,
 )
 
-SOURCE = Path("data/libero_spatial")
-OUTPUT = Path("data/nexarm_libero_spatial")
-ROBOT = Path("assets/robot/robot.xml")
-VIDEO_DIR = Path("outputs/nexarm_libero_spatial")
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = ROOT / "data/libero_spatial"
+OUTPUT = ROOT / "data/nexarm_libero_spatial"
+ROBOT = ROOT / "assets/robot/robot.xml"
+VIDEO_DIR = ROOT / "outputs/nexarm_libero_spatial"
 IMAGE_SIZE = 256
 VIDEO_SIZE = 768
 SCENE_SCALE = 0.45
@@ -42,11 +44,17 @@ EXCLUDED_TASK_MARKERS = (
 )
 MAX_RECORDED_JOINT_DELTA = 0.15
 ACTION_CHUNK_SIZE = 12
-LIBERO_ASSETS = Path("LIBERO/libero/libero/assets").resolve()
-ROBOSUITE_ASSETS = Path(
-    "/opt/homebrew/Caskroom/miniforge/base/envs/libero-replay/lib/python3.10/"
-    "site-packages/robosuite/models/assets"
-)
+LIBERO_ASSETS = ROOT / "LIBERO/libero/libero/assets"
+
+
+def package_assets(package):
+    spec = importlib.util.find_spec(package)
+    if spec is None or spec.origin is None:
+        raise ModuleNotFoundError(f"Install {package} in the active Python environment")
+    return Path(spec.origin).parent / "models/assets"
+
+
+ROBOSUITE_ASSETS = package_assets("robosuite")
 
 
 def numbers(value):
@@ -334,12 +342,21 @@ def retarget(source: h5py.Group, model, data, renderer, video_renderer, ids, pos
 def main(paths=None, limit=None):
     OUTPUT.mkdir(parents=True, exist_ok=True)
     paths = paths or sorted(SOURCE.glob("*.hdf5"))
+    if not paths:
+        raise FileNotFoundError(
+            f"No LIBERO Spatial HDF5 files found in {SOURCE}. "
+            "The data directory is gitignored; copy or download the dataset on this server."
+        )
     paths = [
         path
         for path in paths
         if not any(marker in path.stem for marker in EXCLUDED_TASK_MARKERS)
     ]
+    if not paths:
+        raise RuntimeError("Every discovered task is excluded")
+    print(f"Retargeting {len(paths)} task files from {SOURCE} to {OUTPUT}", flush=True)
     for path in paths:
+        print(f"TASK {path.name}", flush=True)
         with h5py.File(path) as src, h5py.File(OUTPUT / path.name, "w") as dst:
             out = dst.create_group("data")
             info = json.loads(src["data"].attrs["problem_info"])
