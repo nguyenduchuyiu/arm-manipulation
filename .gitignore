@@ -10,3 +10,6 @@ venv/
 *.log
 /LIBERO/
 /SimVLA/
+/panda
+/lerobot-nexarm
+/outputs

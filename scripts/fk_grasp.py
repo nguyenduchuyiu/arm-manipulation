@@ -155,16 +155,15 @@ def main() -> None:
     obj = np.asarray(data.xpos[cube_body], dtype=np.float64).copy()
     print(f"object position: {obj.tolist()}")
 
-    # Frame check: URDF FK link_6_gripper_base must match the canonical MuJoCo
-    # body xpos, else snap-detection (URDF grasp_site) and the weld (MuJoCo
-    # xpos) disagree.
+    # The standalone robot model and scene must use the same gripper frame, else
+    # snap detection and the scene weld disagree.
     q5_home = np.array([data.qpos[addrs[j]] for j in range(5)], dtype=np.float64)
     pose_home = ik.forward_kinematics(q5_home)
-    urdf_base = pose_home[:3, 3]
+    ik_base = pose_home[:3, 3]
     mj_base = np.asarray(data.xpos[gripper_base_body], dtype=np.float64)
-    print(f"frame check: URDF link_6_gripper_base={np.round(urdf_base,4).tolist()} "
+    print(f"frame check: robot.xml link_6_gripper_base={np.round(ik_base,4).tolist()} "
           f"MuJoCo xpos={np.round(mj_base,4).tolist()} "
-          f"diff={np.linalg.norm(urdf_base-mj_base):.4f}")
+          f"diff={np.linalg.norm(ik_base-mj_base):.4f}")
 
     def plan_phase(target_offset, q0, label, orient_w=ORIENT_W):
         snap = data.qpos.copy()

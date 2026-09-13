@@ -1,1 +1,0 @@
-"""RoboTwin dataset registry definitions."""

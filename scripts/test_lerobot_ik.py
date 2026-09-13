@@ -1,4 +1,4 @@
-"""Check URDF/MuJoCo frame agreement and the LIBERO-style EE delta action."""
+"""Check MuJoCo FK and the LIBERO-style EE delta action."""
 from __future__ import annotations
 
 import mujoco
@@ -20,7 +20,7 @@ def main() -> None:
     )
 
     ik = NexArmIK(
-        urdf_path="assets/robot/robot.urdf",
+        model_path="assets/robot/robot.xml",
         target_frame_name="link_6_gripper_base",
     )
 
@@ -29,7 +29,7 @@ def main() -> None:
     state = observation["observation.state"].astype(np.float64)
     current_arm_qpos = state[:5]
 
-    # Kiểm tra URDF FK có khớp MuJoCo hay không.
+    # Kiểm tra FK của robot.xml có khớp scene MuJoCo hay không.
     fk_pose = ik.forward_kinematics(current_arm_qpos)
     fk_xyz = fk_pose[:3, 3]
 
@@ -47,7 +47,7 @@ def main() -> None:
 
     if frame_error > 5e-3:
         raise RuntimeError(
-            "URDF and MuJoCo frames differ by more than 5 mm. "
+            "Robot and scene MuJoCo frames differ by more than 5 mm. "
             "Fix joint/frame conventions before using EE delta control."
         )
 

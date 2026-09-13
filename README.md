@@ -2,8 +2,7 @@
 
 The canonical robot assets live under `assets/robot`:
 
-- `robot.urdf`: kinematics model.
-- `robot.xml`: MuJoCo dynamics, collision, actuators, and wrist camera.
+- `robot.xml`: MuJoCo kinematics, dynamics, collision, actuators, and wrist camera.
 - `scene.xml`: manipulation scene with the cube and front camera.
 - `libero_cabinet_scene.xml`: one LIBERO cabinet task with physical drawer collision.
 - `meshes/`: shared visual meshes.
