@@ -4,17 +4,17 @@
 
 ### Random HOPE tabletop scene
 
-`assets/hope-dataset` contains the [NVIDIA HOPE dataset repository](https://github.com/swtyree/hope-dataset)
-(commit `621d855f58817f8edbb4367ee0efbb7786a59a66`)
-and its 28 low resolution evaluation meshes. The HOPE downloader's MD5 check
-passed. The image and video datasets are not needed for MuJoCo. `HopeNexArmEnv`
+`assets/hope-dataset` contains eight selected low resolution meshes from the
+[NVIDIA HOPE dataset](https://github.com/swtyree/hope-dataset)
+(upstream commit `621d855f58817f8edbb4367ee0efbb7786a59a66`).
+The original mesh archive passed the HOPE downloader's MD5 check. `HopeNexArmEnv`
 uses the existing NexArm model and controller, places three random HOPE objects
 on a table, and includes a chair. The target is the object in the middle. At
 every `reset(seed=...)`, object identities, positions, and yaw change.
 Objects spawn 2 cm above the tabletop with separate footprints, then fall
 under gravity. The live viewer shows the fall at the start of each episode.
-All 28 mesh types can appear as distractors; the target is chosen from five
-thin packages that fit the NexArm gripper when rotated.
+The target is chosen from five thin packages that fit the NexArm gripper when
+rotated. Milk, OrangeJuice, and Tuna can also appear as distractors.
 
 ```bash
 /opt/homebrew/Caskroom/miniforge/base/envs/mujoco-vla/bin/mjpython -m scripts.hope_random_viewer

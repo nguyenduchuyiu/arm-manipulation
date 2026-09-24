@@ -2,90 +2,30 @@
 <mujoco model="NexArm-HOPE">
   <include file="robot.xml" />
   <asset>
-    <texture name="hope_AlphabetSoup_tex" type="2d" file="../hope-dataset/meshes/eval/AlphabetSoup.png" />
-    <material name="hope_AlphabetSoup_mat" texture="hope_AlphabetSoup_tex" />
-    <mesh name="hope_AlphabetSoup_mesh" file="../../hope-dataset/meshes/eval/AlphabetSoup.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_BBQSauce_tex" type="2d" file="../hope-dataset/meshes/eval/BBQSauce.png" />
-    <material name="hope_BBQSauce_mat" texture="hope_BBQSauce_tex" />
-    <mesh name="hope_BBQSauce_mesh" file="../../hope-dataset/meshes/eval/BBQSauce.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_Butter_tex" type="2d" file="../hope-dataset/meshes/eval/Butter.png" />
     <material name="hope_Butter_mat" texture="hope_Butter_tex" />
     <mesh name="hope_Butter_mesh" file="../../hope-dataset/meshes/eval/Butter.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Cherries_tex" type="2d" file="../hope-dataset/meshes/eval/Cherries.png" />
-    <material name="hope_Cherries_mat" texture="hope_Cherries_tex" />
-    <mesh name="hope_Cherries_mesh" file="../../hope-dataset/meshes/eval/Cherries.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_ChocolatePudding_tex" type="2d" file="../hope-dataset/meshes/eval/ChocolatePudding.png" />
     <material name="hope_ChocolatePudding_mat" texture="hope_ChocolatePudding_tex" />
     <mesh name="hope_ChocolatePudding_mesh" file="../../hope-dataset/meshes/eval/ChocolatePudding.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Cookies_tex" type="2d" file="../hope-dataset/meshes/eval/Cookies.png" />
-    <material name="hope_Cookies_mat" texture="hope_Cookies_tex" />
-    <mesh name="hope_Cookies_mesh" file="../../hope-dataset/meshes/eval/Cookies.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Corn_tex" type="2d" file="../hope-dataset/meshes/eval/Corn.png" />
-    <material name="hope_Corn_mat" texture="hope_Corn_tex" />
-    <mesh name="hope_Corn_mesh" file="../../hope-dataset/meshes/eval/Corn.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_CreamCheese_tex" type="2d" file="../hope-dataset/meshes/eval/CreamCheese.png" />
     <material name="hope_CreamCheese_mat" texture="hope_CreamCheese_tex" />
     <mesh name="hope_CreamCheese_mesh" file="../../hope-dataset/meshes/eval/CreamCheese.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_GranolaBars_tex" type="2d" file="../hope-dataset/meshes/eval/GranolaBars.png" />
-    <material name="hope_GranolaBars_mat" texture="hope_GranolaBars_tex" />
-    <mesh name="hope_GranolaBars_mesh" file="../../hope-dataset/meshes/eval/GranolaBars.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_GreenBeans_tex" type="2d" file="../hope-dataset/meshes/eval/GreenBeans.png" />
-    <material name="hope_GreenBeans_mat" texture="hope_GreenBeans_tex" />
-    <mesh name="hope_GreenBeans_mesh" file="../../hope-dataset/meshes/eval/GreenBeans.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Ketchup_tex" type="2d" file="../hope-dataset/meshes/eval/Ketchup.png" />
-    <material name="hope_Ketchup_mat" texture="hope_Ketchup_tex" />
-    <mesh name="hope_Ketchup_mesh" file="../../hope-dataset/meshes/eval/Ketchup.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_MacaroniAndCheese_tex" type="2d" file="../hope-dataset/meshes/eval/MacaroniAndCheese.png" />
-    <material name="hope_MacaroniAndCheese_mat" texture="hope_MacaroniAndCheese_tex" />
-    <mesh name="hope_MacaroniAndCheese_mesh" file="../../hope-dataset/meshes/eval/MacaroniAndCheese.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Mayo_tex" type="2d" file="../hope-dataset/meshes/eval/Mayo.png" />
-    <material name="hope_Mayo_mat" texture="hope_Mayo_tex" />
-    <mesh name="hope_Mayo_mesh" file="../../hope-dataset/meshes/eval/Mayo.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Milk_tex" type="2d" file="../hope-dataset/meshes/eval/Milk.png" />
-    <material name="hope_Milk_mat" texture="hope_Milk_tex" />
-    <mesh name="hope_Milk_mesh" file="../../hope-dataset/meshes/eval/Milk.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Mushrooms_tex" type="2d" file="../hope-dataset/meshes/eval/Mushrooms.png" />
-    <material name="hope_Mushrooms_mat" texture="hope_Mushrooms_tex" />
-    <mesh name="hope_Mushrooms_mesh" file="../../hope-dataset/meshes/eval/Mushrooms.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Mustard_tex" type="2d" file="../hope-dataset/meshes/eval/Mustard.png" />
-    <material name="hope_Mustard_mat" texture="hope_Mustard_tex" />
-    <mesh name="hope_Mustard_mesh" file="../../hope-dataset/meshes/eval/Mustard.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_OrangeJuice_tex" type="2d" file="../hope-dataset/meshes/eval/OrangeJuice.png" />
-    <material name="hope_OrangeJuice_mat" texture="hope_OrangeJuice_tex" />
-    <mesh name="hope_OrangeJuice_mesh" file="../../hope-dataset/meshes/eval/OrangeJuice.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Parmesan_tex" type="2d" file="../hope-dataset/meshes/eval/Parmesan.png" />
-    <material name="hope_Parmesan_mat" texture="hope_Parmesan_tex" />
-    <mesh name="hope_Parmesan_mesh" file="../../hope-dataset/meshes/eval/Parmesan.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Peaches_tex" type="2d" file="../hope-dataset/meshes/eval/Peaches.png" />
-    <material name="hope_Peaches_mat" texture="hope_Peaches_tex" />
-    <mesh name="hope_Peaches_mesh" file="../../hope-dataset/meshes/eval/Peaches.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_PeasAndCarrots_tex" type="2d" file="../hope-dataset/meshes/eval/PeasAndCarrots.png" />
-    <material name="hope_PeasAndCarrots_mat" texture="hope_PeasAndCarrots_tex" />
-    <mesh name="hope_PeasAndCarrots_mesh" file="../../hope-dataset/meshes/eval/PeasAndCarrots.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Pineapple_tex" type="2d" file="../hope-dataset/meshes/eval/Pineapple.png" />
-    <material name="hope_Pineapple_mat" texture="hope_Pineapple_tex" />
-    <mesh name="hope_Pineapple_mesh" file="../../hope-dataset/meshes/eval/Pineapple.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_Popcorn_tex" type="2d" file="../hope-dataset/meshes/eval/Popcorn.png" />
     <material name="hope_Popcorn_mat" texture="hope_Popcorn_tex" />
     <mesh name="hope_Popcorn_mesh" file="../../hope-dataset/meshes/eval/Popcorn.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_Raisins_tex" type="2d" file="../hope-dataset/meshes/eval/Raisins.png" />
     <material name="hope_Raisins_mat" texture="hope_Raisins_tex" />
     <mesh name="hope_Raisins_mesh" file="../../hope-dataset/meshes/eval/Raisins.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_SaladDressing_tex" type="2d" file="../hope-dataset/meshes/eval/SaladDressing.png" />
-    <material name="hope_SaladDressing_mat" texture="hope_SaladDressing_tex" />
-    <mesh name="hope_SaladDressing_mesh" file="../../hope-dataset/meshes/eval/SaladDressing.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Spaghetti_tex" type="2d" file="../hope-dataset/meshes/eval/Spaghetti.png" />
-    <material name="hope_Spaghetti_mat" texture="hope_Spaghetti_tex" />
-    <mesh name="hope_Spaghetti_mesh" file="../../hope-dataset/meshes/eval/Spaghetti.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_TomatoSauce_tex" type="2d" file="../hope-dataset/meshes/eval/TomatoSauce.png" />
-    <material name="hope_TomatoSauce_mat" texture="hope_TomatoSauce_tex" />
-    <mesh name="hope_TomatoSauce_mesh" file="../../hope-dataset/meshes/eval/TomatoSauce.obj" scale="0.01 0.01 0.01" />
+    <texture name="hope_Milk_tex" type="2d" file="../hope-dataset/meshes/eval/Milk.png" />
+    <material name="hope_Milk_mat" texture="hope_Milk_tex" />
+    <mesh name="hope_Milk_mesh" file="../../hope-dataset/meshes/eval/Milk.obj" scale="0.01 0.01 0.01" />
+    <texture name="hope_OrangeJuice_tex" type="2d" file="../hope-dataset/meshes/eval/OrangeJuice.png" />
+    <material name="hope_OrangeJuice_mat" texture="hope_OrangeJuice_tex" />
+    <mesh name="hope_OrangeJuice_mesh" file="../../hope-dataset/meshes/eval/OrangeJuice.obj" scale="0.01 0.01 0.01" />
     <texture name="hope_Tuna_tex" type="2d" file="../hope-dataset/meshes/eval/Tuna.png" />
     <material name="hope_Tuna_mat" texture="hope_Tuna_tex" />
     <mesh name="hope_Tuna_mesh" file="../../hope-dataset/meshes/eval/Tuna.obj" scale="0.01 0.01 0.01" />
-    <texture name="hope_Yogurt_tex" type="2d" file="../hope-dataset/meshes/eval/Yogurt.png" />
-    <material name="hope_Yogurt_mat" texture="hope_Yogurt_tex" />
-    <mesh name="hope_Yogurt_mesh" file="../../hope-dataset/meshes/eval/Yogurt.obj" scale="0.01 0.01 0.01" />
   </asset>
   <visual>
     <headlight ambient="0.3 0.3 0.3" diffuse="0.4 0.4 0.4" specular="0.15 0.15 0.15" />
@@ -108,99 +48,39 @@
     <light pos="0.9 0.2 1.1" dir="-0.2 -0.2 -1" diffuse="0.35 0.35 0.35" />
     <body name="cube" pos="0.54 -0.21 0.04641319000000001">
       <freejoint name="cube_joint" />
-      <geom name="hope_visual_0_AlphabetSoup" type="mesh" mesh="hope_AlphabetSoup_mesh" material="hope_AlphabetSoup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_BBQSauce" type="mesh" mesh="hope_BBQSauce_mesh" material="hope_BBQSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_Butter" type="mesh" mesh="hope_Butter_mesh" material="hope_Butter_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 1" />
-      <geom name="hope_visual_0_Cherries" type="mesh" mesh="hope_Cherries_mesh" material="hope_Cherries_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_ChocolatePudding" type="mesh" mesh="hope_ChocolatePudding_mesh" material="hope_ChocolatePudding_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Cookies" type="mesh" mesh="hope_Cookies_mesh" material="hope_Cookies_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Corn" type="mesh" mesh="hope_Corn_mesh" material="hope_Corn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_CreamCheese" type="mesh" mesh="hope_CreamCheese_mesh" material="hope_CreamCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_GranolaBars" type="mesh" mesh="hope_GranolaBars_mesh" material="hope_GranolaBars_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_GreenBeans" type="mesh" mesh="hope_GreenBeans_mesh" material="hope_GreenBeans_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Ketchup" type="mesh" mesh="hope_Ketchup_mesh" material="hope_Ketchup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_MacaroniAndCheese" type="mesh" mesh="hope_MacaroniAndCheese_mesh" material="hope_MacaroniAndCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Mayo" type="mesh" mesh="hope_Mayo_mesh" material="hope_Mayo_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Mushrooms" type="mesh" mesh="hope_Mushrooms_mesh" material="hope_Mushrooms_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Mustard" type="mesh" mesh="hope_Mustard_mesh" material="hope_Mustard_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Parmesan" type="mesh" mesh="hope_Parmesan_mesh" material="hope_Parmesan_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Peaches" type="mesh" mesh="hope_Peaches_mesh" material="hope_Peaches_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_PeasAndCarrots" type="mesh" mesh="hope_PeasAndCarrots_mesh" material="hope_PeasAndCarrots_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Pineapple" type="mesh" mesh="hope_Pineapple_mesh" material="hope_Pineapple_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_Popcorn" type="mesh" mesh="hope_Popcorn_mesh" material="hope_Popcorn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_Raisins" type="mesh" mesh="hope_Raisins_mesh" material="hope_Raisins_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_SaladDressing" type="mesh" mesh="hope_SaladDressing_mesh" material="hope_SaladDressing_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Spaghetti" type="mesh" mesh="hope_Spaghetti_mesh" material="hope_Spaghetti_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_TomatoSauce" type="mesh" mesh="hope_TomatoSauce_mesh" material="hope_TomatoSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_0_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_0_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_0_Tuna" type="mesh" mesh="hope_Tuna_mesh" material="hope_Tuna_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_0_Yogurt" type="mesh" mesh="hope_Yogurt_mesh" material="hope_Yogurt_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_collision_0" type="box" size="0.12494035 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
+      <geom name="hope_collision_0" type="box" size="0.06324596 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
     </body>
     <body name="hope_object_1" pos="0.28 -0.21 0.04641319000000001">
       <freejoint name="hope_joint_1" />
-      <geom name="hope_visual_1_AlphabetSoup" type="mesh" mesh="hope_AlphabetSoup_mesh" material="hope_AlphabetSoup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_BBQSauce" type="mesh" mesh="hope_BBQSauce_mesh" material="hope_BBQSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_Butter" type="mesh" mesh="hope_Butter_mesh" material="hope_Butter_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 1" />
-      <geom name="hope_visual_1_Cherries" type="mesh" mesh="hope_Cherries_mesh" material="hope_Cherries_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_ChocolatePudding" type="mesh" mesh="hope_ChocolatePudding_mesh" material="hope_ChocolatePudding_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Cookies" type="mesh" mesh="hope_Cookies_mesh" material="hope_Cookies_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Corn" type="mesh" mesh="hope_Corn_mesh" material="hope_Corn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_CreamCheese" type="mesh" mesh="hope_CreamCheese_mesh" material="hope_CreamCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_GranolaBars" type="mesh" mesh="hope_GranolaBars_mesh" material="hope_GranolaBars_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_GreenBeans" type="mesh" mesh="hope_GreenBeans_mesh" material="hope_GreenBeans_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Ketchup" type="mesh" mesh="hope_Ketchup_mesh" material="hope_Ketchup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_MacaroniAndCheese" type="mesh" mesh="hope_MacaroniAndCheese_mesh" material="hope_MacaroniAndCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Mayo" type="mesh" mesh="hope_Mayo_mesh" material="hope_Mayo_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Mushrooms" type="mesh" mesh="hope_Mushrooms_mesh" material="hope_Mushrooms_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Mustard" type="mesh" mesh="hope_Mustard_mesh" material="hope_Mustard_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Parmesan" type="mesh" mesh="hope_Parmesan_mesh" material="hope_Parmesan_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Peaches" type="mesh" mesh="hope_Peaches_mesh" material="hope_Peaches_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_PeasAndCarrots" type="mesh" mesh="hope_PeasAndCarrots_mesh" material="hope_PeasAndCarrots_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Pineapple" type="mesh" mesh="hope_Pineapple_mesh" material="hope_Pineapple_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_Popcorn" type="mesh" mesh="hope_Popcorn_mesh" material="hope_Popcorn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_Raisins" type="mesh" mesh="hope_Raisins_mesh" material="hope_Raisins_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_SaladDressing" type="mesh" mesh="hope_SaladDressing_mesh" material="hope_SaladDressing_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Spaghetti" type="mesh" mesh="hope_Spaghetti_mesh" material="hope_Spaghetti_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_TomatoSauce" type="mesh" mesh="hope_TomatoSauce_mesh" material="hope_TomatoSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_1_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_1_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_1_Tuna" type="mesh" mesh="hope_Tuna_mesh" material="hope_Tuna_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_1_Yogurt" type="mesh" mesh="hope_Yogurt_mesh" material="hope_Yogurt_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_collision_1" type="box" size="0.12494035 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
+      <geom name="hope_collision_1" type="box" size="0.06324596 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
     </body>
     <body name="hope_object_2" pos="0.8 -0.21 0.04641319000000001">
       <freejoint name="hope_joint_2" />
-      <geom name="hope_visual_2_AlphabetSoup" type="mesh" mesh="hope_AlphabetSoup_mesh" material="hope_AlphabetSoup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_BBQSauce" type="mesh" mesh="hope_BBQSauce_mesh" material="hope_BBQSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_Butter" type="mesh" mesh="hope_Butter_mesh" material="hope_Butter_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 1" />
-      <geom name="hope_visual_2_Cherries" type="mesh" mesh="hope_Cherries_mesh" material="hope_Cherries_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_ChocolatePudding" type="mesh" mesh="hope_ChocolatePudding_mesh" material="hope_ChocolatePudding_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Cookies" type="mesh" mesh="hope_Cookies_mesh" material="hope_Cookies_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Corn" type="mesh" mesh="hope_Corn_mesh" material="hope_Corn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_CreamCheese" type="mesh" mesh="hope_CreamCheese_mesh" material="hope_CreamCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_GranolaBars" type="mesh" mesh="hope_GranolaBars_mesh" material="hope_GranolaBars_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_GreenBeans" type="mesh" mesh="hope_GreenBeans_mesh" material="hope_GreenBeans_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Ketchup" type="mesh" mesh="hope_Ketchup_mesh" material="hope_Ketchup_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_MacaroniAndCheese" type="mesh" mesh="hope_MacaroniAndCheese_mesh" material="hope_MacaroniAndCheese_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Mayo" type="mesh" mesh="hope_Mayo_mesh" material="hope_Mayo_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Mushrooms" type="mesh" mesh="hope_Mushrooms_mesh" material="hope_Mushrooms_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Mustard" type="mesh" mesh="hope_Mustard_mesh" material="hope_Mustard_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Parmesan" type="mesh" mesh="hope_Parmesan_mesh" material="hope_Parmesan_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Peaches" type="mesh" mesh="hope_Peaches_mesh" material="hope_Peaches_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_PeasAndCarrots" type="mesh" mesh="hope_PeasAndCarrots_mesh" material="hope_PeasAndCarrots_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Pineapple" type="mesh" mesh="hope_Pineapple_mesh" material="hope_Pineapple_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_Popcorn" type="mesh" mesh="hope_Popcorn_mesh" material="hope_Popcorn_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_Raisins" type="mesh" mesh="hope_Raisins_mesh" material="hope_Raisins_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_SaladDressing" type="mesh" mesh="hope_SaladDressing_mesh" material="hope_SaladDressing_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Spaghetti" type="mesh" mesh="hope_Spaghetti_mesh" material="hope_Spaghetti_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_TomatoSauce" type="mesh" mesh="hope_TomatoSauce_mesh" material="hope_TomatoSauce_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_2_Milk" type="mesh" mesh="hope_Milk_mesh" material="hope_Milk_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
+      <geom name="hope_visual_2_OrangeJuice" type="mesh" mesh="hope_OrangeJuice_mesh" material="hope_OrangeJuice_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
       <geom name="hope_visual_2_Tuna" type="mesh" mesh="hope_Tuna_mesh" material="hope_Tuna_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_visual_2_Yogurt" type="mesh" mesh="hope_Yogurt_mesh" material="hope_Yogurt_mat" quat="0.70710678 0.70710678 0 0" contype="0" conaffinity="0" group="2" mass="0" rgba="1 1 1 0" />
-      <geom name="hope_collision_2" type="box" size="0.12494035 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
+      <geom name="hope_collision_2" type="box" size="0.06324596 0.036612685000000006 0.09622282500000001" mass="0.08" rgba="0 0 0 0" friction="1.2 0.01 0.001" />
     </body>
   </worldbody>
 </mujoco>

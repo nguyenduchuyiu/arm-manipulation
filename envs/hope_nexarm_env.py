@@ -6,7 +6,6 @@ import xml.etree.ElementTree as ET
 
 import mujoco
 import numpy as np
-from PIL import Image
 
 from .nexarm_env import NexArmEnv
 
@@ -18,20 +17,22 @@ SLOTS = 3
 SLOT_X = (0.54, 0.28, 0.80)
 SPAWN_CLEARANCE = 0.02
 GRASPABLE_TARGETS = ("Butter", "ChocolatePudding", "CreamCheese", "Popcorn", "Raisins")
+HOPE_OBJECTS = GRASPABLE_TARGETS + ("Milk", "OrangeJuice", "Tuna")
 
 
 def hope_objects() -> dict[str, np.ndarray]:
     """Return collision half extents in metres; HOPE OBJ coordinates are cm, Y-up."""
-    meshes = sorted(MESH_DIR.glob("*.obj"))
-    if len(meshes) != 28:
-        raise FileNotFoundError(f"Expected 28 HOPE OBJ meshes in {MESH_DIR}")
     sizes = {}
-    for path in meshes:
+    for name in HOPE_OBJECTS:
+        path = MESH_DIR / f"{name}.obj"
+        texture = MESH_DIR / f"{name}.png"
+        if not path.is_file() or not texture.is_file():
+            raise FileNotFoundError(f"Missing HOPE mesh or texture for {name} in {MESH_DIR}")
         vertices = np.array(
             [list(map(float, line.split()[1:4])) for line in path.open() if line.startswith("v ")]
         )
         half = (vertices.max(axis=0) - vertices.min(axis=0)) * 0.005
-        sizes[path.stem] = half[[0, 2, 1]]
+        sizes[name] = half[[0, 2, 1]]
     return sizes
 
 
@@ -42,10 +43,6 @@ def build_hope_scene(path: Path = SCENE_PATH) -> Path:
     ET.SubElement(root, "include", file="robot.xml")
     asset = ET.SubElement(root, "asset")
     for name in sizes:
-        png = MESH_DIR / f"{name}.png"
-        if not png.exists():
-            with Image.open(MESH_DIR / f"{name}.jpg") as image:
-                image.save(png)
         texture = f"../hope-dataset/meshes/eval/{name}.png"
         mesh = f"../../hope-dataset/meshes/eval/{name}.obj"
         ET.SubElement(asset, "texture", name=f"hope_{name}_tex", type="2d", file=texture)
