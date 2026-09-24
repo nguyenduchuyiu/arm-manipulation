@@ -1,10 +1,50 @@
 # NexArm manipulation
 
+## Simulation and data collection
+
+### Random HOPE tabletop scene
+
+`assets/hope-dataset` contains the [NVIDIA HOPE dataset repository](https://github.com/swtyree/hope-dataset)
+(commit `621d855f58817f8edbb4367ee0efbb7786a59a66`)
+and its 28 low resolution evaluation meshes. The HOPE downloader's MD5 check
+passed. The image and video datasets are not needed for MuJoCo. `HopeNexArmEnv`
+uses the existing NexArm model and controller, places three random HOPE objects
+on a table, and includes a chair. The target is the object in the middle. At
+every `reset(seed=...)`, object identities, positions, and yaw change.
+Objects spawn 2 cm above the tabletop with separate footprints, then fall
+under gravity. The live viewer shows the fall at the start of each episode.
+All 28 mesh types can appear as distractors; the target is chosen from five
+thin packages that fit the NexArm gripper when rotated.
+
+```bash
+/opt/homebrew/Caskroom/miniforge/base/envs/mujoco-vla/bin/mjpython -m scripts.hope_random_viewer
+```
+
+This opens MuJoCo viewer first, shows ten seeded random rollouts at a readable
+pace, and prints each reward and ending reason. The viewer stays open afterward.
+It starts on the front camera; the wrist camera can be selected in the viewer
+camera menu.
+The front camera views the arm from above and in front; the wrist camera follows
+the gripper. Actions and image observations use the same format as `NexArmEnv`.
+`step` returns `(observation, reward, terminated, truncated, info)`: reward is 1
+after the target stays at least 8 cm above the table for ten control steps,
+otherwise 0. Failure ends the episode if the target leaves the workspace or
+joint speed exceeds the safety threshold; the step limit sets `truncated`.
+HOPE contacts use box proxies and a nominal 80 g mass per object.
+
+```python
+from envs import HopeNexArmEnv
+
+env = HopeNexArmEnv()
+observation, info = env.reset(seed=42)
+observation, reward, terminated, truncated, info = env.step(env.home_action)
+env.close()
+```
+
 The canonical robot assets live under `assets/robot`:
 
 - `robot.xml`: MuJoCo kinematics, dynamics, collision, actuators, and wrist camera.
-- `scene.xml`: manipulation scene with the cube and front camera.
-- `libero_cabinet_scene.xml`: one LIBERO cabinet task with physical drawer collision.
+- `hope_scene.xml`: generated HOPE tabletop scene and front camera.
 - `meshes/`: shared visual meshes.
 
 The arm has five revolute joints and one parallel gripper. `NexArmEnv` uses the
@@ -13,66 +53,6 @@ LIBERO-style normalized action `[dx, dy, dz, dax, day, daz, gripper]` in
 gripper uses `+1` for open and `-1` for closed. The LeRobot backend keeps its
 hardware-compatible raw servo convention (`0..4095`).
 
-Run the environment smoke test:
-
-```bash
-python scripts/test_nexarm_env.py
-```
-
-Run the physical-contact grasp oracle:
-
-```bash
-python scripts/record_pick_episode.py --out outputs
-```
-
-The recorder writes synchronized front/wrist MP4s and `pick_episode.npz`. Its
-primary `action` array is the normalized 7D LIBERO format; physical joint state
-and the original raw servo values are also retained for debugging.
-
-Open the interactive grasp viewer:
-
-```bash
-mjpython scripts/interact_grasp.py
-```
-
-Retarget the downloaded LIBERO top-drawer demonstration to NexArm:
-
-```bash
-conda run -n mujoco-vla python scripts/retarget_libero_drawer.py
-```
-
-This writes `data/nexarm_libero/close_top_drawer_demo_0.hdf5` and a verification
-video at `outputs/nexarm_libero_close_drawer.mp4`. The drawer moves only through
-MuJoCo contact; the script rejects the episode unless the drawer reaches the
-closed threshold. Source EE waypoints are smoothed and cubic-spline resampled
-from 20 Hz to a 100 Hz controller loop; observations and actions remain recorded
-at 20 Hz. A smooth terminal EE push compensates for the Panda-to-NexArm geometry
-difference without accumulating joint commands.
-
-Render NexArm retargets for all 50 demonstrations:
-
-```bash
-conda run -n mujoco-vla python scripts/render_nexarm_libero_retargets.py
-```
-
-The 50 labeled MP4 files and their success manifest are written under
-`outputs/nexarm_libero_50/`.
-
-Retarget all 500 LIBERO-Spatial demonstrations with physical collision:
-
-```bash
-conda run -n mujoco-vla python scripts/retarget_libero_spatial.py
-```
-
-The 10 NexArm HDF5 files are written to `data/nexarm_libero_spatial`; train on
-episodes whose `success` attribute is true.
-
-Replay all original Panda demonstrations with LIBERO's generated BDDL scene:
-
-```bash
-PYTHONPATH=LIBERO conda run -n libero-replay \
-  python scripts/replay_libero_dataset.py
-```
-
-The replay writes its per-episode success and state-divergence report to
-`outputs/libero_replay_report.json`.
+`lerobot-nexarm/` is a separate checkout for leader/follower teleoperation,
+recording demonstrations, and deploying policies on the physical NexArm. The
+HOPE MuJoCo environment does not import it.

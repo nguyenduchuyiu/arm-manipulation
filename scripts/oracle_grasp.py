@@ -1,26 +1,4 @@
-"""Record a SO-101-style oracle grasp through LeRobot's NexArm backend.
-
-Faithful port of vla-so101/vla_data/oracle.py:
-
-  * read cube ground-truth pose, plan targets as obj + offsets (no hardcoded
-    waypoints);
-  * fix the last two arm joints at GRASP_WRIST_RAD and solve 3-DOF POSITION-only
-    IK for the first three joints (no orientation term — the wrist pose encodes the
-    grasp orientation, exactly like SO-101's [26,-110]deg demo pose). The wrist
-    stays at the base pose (j4=0, j5=0): no rotation needed;
-  * closed-loop servo per step: cmd += clip(0.15*(target-actual), max_step) —
-    single gain regime, matching SO-101;
-  * grip is REAL jaw friction (no kinematic weld) — the corrected gripper_base
-    collision box lets the jaws pinch the cube, which lifts and holds physically.
-
-The NexArm-specific deviation from SO-101 is the grasp geometry: SO-101 descends
-top-down (TCP above the cube); NexArm grasps from the SIDE — at the home pose the
-jaws already point at the cube along local -y, so the wrist stays at the base pose
-(j4=0, j5=0, NO rotation) and the cube enters along the jaw length axis. The grasp
-target places the TCP SIDE_D in local +y from the cube so the cube sits at the jaw
-tip. This is collision-honest once the gripper_base collision box is sized to the
-real mesh (see assets/robot/robot.xml).
-
+"""
 Control layer is LeRobot's `backend.step` (raw 0..4095). Records front+wrist
 MP4s and aligned raw joint/action arrays. Success is obj_z > 0.08 m held 10
 steps.
