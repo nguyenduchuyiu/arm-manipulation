@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 root=memory_occlusion/datasets/memory_occlusion_tcow_25hz_240x320_v1
 python=.venv/bin/python
-workers="$("$python" -c 'import os; print(os.cpu_count())')"
+workers="$("$python" -c 'import os; print(min(6, os.cpu_count()))')"
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 echo "Preparing full 25 Hz dataset: 800 standard + 80 composition episodes"
