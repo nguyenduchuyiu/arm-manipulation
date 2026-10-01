@@ -82,8 +82,11 @@ CUDA_VISIBLE_DEVICES=2,5 RUN_NAME=memory_occlusion_ddp_smoke_20261001 \
 
 After that smoke passes, omit `--max-clusters` and `--smoke-steps`, select a new
 `RUN_NAME`, and set `--epochs 5`. Run through `tee` inside `huy:memory_occlusion`.
-Each rank keeps eight-episode clusters and prefetches the next cluster; CPU
-affinity must cap the entire job to eight cores. Do not start if summed RAM
+Rank zero decodes each eight-episode cluster once into temporary shared RAM
+buffers under `/dev/shm/<RUN_NAME>` and prefetches the next cluster. All ranks
+map those buffers; completed clusters are released after synchronization.
+Shared buffers are capped at 48 GiB, leaving RAM for the model and decoder.
+CPU affinity must cap the entire job to eight cores. Do not start if total RAM
 or any selected GPU's memory exceeds the experiment limits.
 
 `smoke_policy.py` verifies pretrained import, dense spatial conditioning,

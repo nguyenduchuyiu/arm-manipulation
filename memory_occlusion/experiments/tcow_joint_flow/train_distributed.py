@@ -4,7 +4,9 @@ from datetime import timedelta
 import json
 import logging
 import os
+from pathlib import Path
 import resource
+import shutil
 import sys
 import time
 
@@ -34,6 +36,46 @@ def rank_batch(batch, sizes, rank):
     # A short final batch still needs one forward/backward on every rank.
     # Its dummy sample gets zero weight, so no training sample is duplicated.
     return (items if items else batch[:1]), len(items)
+
+
+def cache_cluster(data_root, rows, destination):
+    """Decode once into temporary RAM files that every rank can map."""
+    destination.mkdir()
+    occupied = sum(p.stat().st_size for p in destination.parent.rglob("*.npy"))
+    descriptors = []
+    for index, row in enumerate(tqdm(rows, desc="load shared episodes", unit="episode",
+                                     mininterval=5, file=sys.stdout)):
+        episode = load_joint_episode(data_root / row["path"])
+        arrays, scalars = {}, {}
+        for key, value in episode.items():
+            if isinstance(value, np.ndarray):
+                occupied += value.nbytes
+                if occupied > 48 * 2**30:
+                    raise MemoryError("shared episode buffers exceed 48 GiB; reduce cluster size")
+                path = destination / f"{index}_{key}.npy"
+                mapped = np.lib.format.open_memmap(path, mode="w+", dtype=value.dtype, shape=value.shape)
+                mapped[:] = value
+                mapped.flush()
+                mapped._mmap.close()
+                arrays[key] = str(path)
+            else:
+                scalars[key] = value
+        descriptors.append((row, scalars, arrays))
+        del episode
+    tqdm.write(json.dumps({"event": "shared_cluster_ready", "episodes": len(rows),
+                           "shared_buffers_gib": occupied / 2**30}), file=sys.stdout)
+    return descriptors
+
+
+def release_cluster(episodes, destination, rank):
+    for _row, episode in episodes:
+        for value in episode.values():
+            if isinstance(value, np.memmap):
+                value._mmap.close()
+    dist.barrier()
+    if rank == 0:
+        shutil.rmtree(destination)
+    dist.barrier()
 
 
 def main():
@@ -143,22 +185,28 @@ def main():
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats()
 
-    def load(rows):
-        return [(row, load_joint_episode(args.data / row["path"])) for row in
-                tqdm(rows, desc="load episodes", unit="episode", mininterval=5,
-                     file=sys.stdout, disable=rank != 0)]
-
+    shared_root = Path("/dev/shm") / args.output.name
+    if rank == 0:
+        shared_root.mkdir(mode=0o700)
     with ThreadPoolExecutor(max_workers=1) as loader:
-        future = loader.submit(load, clusters[0])
+        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0")
+                  if rank == 0 else None)
         with tqdm(total=args.smoke_steps or total_steps, desc="train TCOW + flow (DDP)",
                   unit="step", mininterval=5, file=sys.stdout, disable=rank != 0) as progress:
             for cluster_index in range(len(clusters) * args.epochs):
                 cluster_id = cluster_index % len(clusters)
                 waiting = time.perf_counter()
-                episodes = future.result()
+                publication = [future.result() if rank == 0 else None]
+                dist.broadcast_object_list(publication, src=0)
+                episodes = [(row, {**scalars, **{key: np.load(path, mmap_mode="r")
+                                               for key, path in arrays.items()}})
+                            for row, scalars, arrays in publication[0]]
                 wait_s += time.perf_counter() - waiting
-                future = (loader.submit(load, clusters[(cluster_index + 1) % len(clusters)])
-                          if not args.smoke_steps and cluster_index + 1 < len(clusters) * args.epochs else None)
+                future = (loader.submit(cache_cluster, args.data,
+                                        clusters[(cluster_index + 1) % len(clusters)],
+                                        shared_root / str(cluster_index + 1))
+                          if rank == 0 and not args.smoke_steps and
+                          cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(i, end, action) for i, plan in enumerate(plans[cluster_id]) for end, action in plan]
                 for i, (_row, episode) in enumerate(episodes):
                     actual = [(end, action) for end, action in training_samples(episode)
@@ -250,8 +298,12 @@ def main():
                                       "per_rank_peak_vram_cpu_rss_gib": [m.tolist() for m in memories]}
                             (args.output / "smoke.json").write_text(json.dumps(report, indent=2) + "\n")
                             print(json.dumps(report), flush=True)
+                        release_cluster(episodes, shared_root / str(cluster_index), rank)
+                        if rank == 0:
+                            shared_root.rmdir()
                         dist.destroy_process_group()
                         return
+                release_cluster(episodes, shared_root / str(cluster_index), rank)
                 del episodes
                 if (cluster_index + 1) % args.eval_every_clusters == 0 or cluster_index + 1 == len(clusters) * args.epochs:
                     dist.barrier()
@@ -271,6 +323,7 @@ def main():
                         tqdm.write(json.dumps(record), file=sys.stdout)
                     dist.barrier()
     if rank == 0:
+        shared_root.rmdir()
         save_checkpoint(args.output / "final.pt", model, step, args, history[-1]["validation"])
         (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
         print(json.dumps({"event": "complete", "steps": step,
