@@ -93,7 +93,7 @@ def clip(episode, end: int, device: str):
     depth = ((depth.clamp(.4, 1.6) - 1.0) / .6)[None]
     rgbd = torch.cat((rgb, depth), dim=0)[None]
     query = torch.zeros((1, 1, 30, 240, 320), device=device)
-    query[0, 0, 0] = torch.from_numpy(episode["query"]).to(device)
+    query[0, 0, 0] = torch.from_numpy(episode["query"].copy()).to(device)
     masks = torch.from_numpy(episode["mask"][indices].copy()).permute(1, 0, 2, 3)[None].float().to(device)
     proprio = torch.from_numpy(episode["proprio"][end].copy())[None].to(device)
     action = torch.from_numpy(episode["action"][end:end + 25].copy())[None].to(device)
@@ -137,7 +137,7 @@ def policy_clip(episode, end: int, device: str):
     depth = ((depth.clamp(.4, 1.6) - 1.0) / .6)[None]
     rgbd = torch.cat((rgb, depth), dim=0)[None]
     query = torch.zeros((1, 1, 30, 240, 320), device=device)
-    query[0, 0, 0] = torch.from_numpy(episode["query"]).to(device)
+    query[0, 0, 0] = torch.from_numpy(episode["query"].copy()).to(device)
     proprio = torch.from_numpy(episode["proprio"][end].copy())[None].to(device)
     action = torch.from_numpy(episode["action"][end:end + 25].copy())[None].to(device)
     return rgbd, query, proprio, action
