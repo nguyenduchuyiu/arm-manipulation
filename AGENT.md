@@ -138,6 +138,8 @@ Use `vishc-server-1` only for workloads that need its compute or Linux/CUDA envi
 
 Update code on local machine and then git push to remote, and then git pull on server to save edit time.
 
+Use the single server workspace `/home/hoang.pm/duchuy/arm-manipulation`; do not create additional experiment worktrees. Name project branches, runs, and artifacts after `memory_occlusion`. Keep names of reference models only in source attribution and checkpoint provenance.
+
 ### Resources
 
 * Use one GPU only. Set `CUDA_VISIBLE_DEVICES=0` (or another which is not full).
