@@ -34,7 +34,7 @@ def save_checkpoint(path, model, step, args, metrics):
     payload = {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
                "step": step, "architecture": "TCOW RGB-D + dense 301-token context, flow 25x6",
                "flow_type": model.flow.flow_type,
-               "source_flow_checkpoint": str(args.smolvla_weights) if args.smolvla_weights else None,
+               "source_flow_checkpoint": str(args.flow_weights) if args.flow_weights else None,
                "source_checkpoint": str(args.weights), "metrics": metrics,
                "mask_loss_weight": args.mask_loss_weight}
     temp = path.with_suffix(".tmp")
@@ -76,8 +76,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--weights", type=Path, required=True)
-    p.add_argument("--smolvla-weights", type=Path, required=True,
-                   help="expert.safetensors exported by download_smolvla")
+    p.add_argument("--flow-weights", type=Path, required=True,
+                   help="expert.safetensors exported by download_action_expert")
     p.add_argument("--config-checkpoint", type=Path,
                    help="required for joint TCOW + flow training")
     p.add_argument("--output", type=Path, required=True)
@@ -104,8 +104,8 @@ def main():
         raise ValueError("--config-checkpoint is required for joint training")
     if not args.weights.is_file():
         raise FileNotFoundError(args.weights)
-    if not args.smolvla_weights.is_file():
-        raise FileNotFoundError(args.smolvla_weights)
+    if not args.flow_weights.is_file():
+        raise FileNotFoundError(args.flow_weights)
     if args.config_checkpoint and not args.config_checkpoint.is_file():
         raise FileNotFoundError(args.config_checkpoint)
     device = args.device
@@ -128,8 +128,8 @@ def main():
         **{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "sample_fps": 25, "context_frames": 30, "action_horizon": 25,
         "context_stride": 10, "action_stride": 10, "inference_execution_steps": 10,
-        "flow_steps": 10, "flow_type": "smolvla_dense",
-        "flow_time": "smolvla_beta_and_sinusoidal_reversed_to_noise_at_t0",
+        "flow_steps": 10, "flow_type": "dense_action_expert",
+        "flow_time": "beta_sinusoidal_noise_at_t0",
         "train_episodes": sum(map(len, clusters)), "validation_episodes": len(val_rows),
     }, indent=2) + "\n")
     torch.set_num_threads(4)
@@ -145,9 +145,9 @@ def main():
     tcow.load_state_dict(pretrained["net_seeker"], strict=True)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
-    from memory_occlusion.experiments.tcow_joint_flow.smolvla_flow import SmolVLADenseFlow
-    flow = SmolVLADenseFlow()
-    imported = flow.load_pretrained(args.smolvla_weights)
+    from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
+    flow = DenseFlowMatching()
+    imported = flow.load_pretrained(args.flow_weights)
     statistics = policy_statistics(args.data, [row for rows in clusters for row in rows])
     flow.set_statistics(statistics)
     (args.output / "flow_initialization.json").write_text(

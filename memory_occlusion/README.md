@@ -75,7 +75,7 @@ and `supervision.npz` for debugging and split construction.
 `evaluation/metrics.py` contains cover selection accuracy and full task success
 calculations.
 
-The active TCOW and pretrained SmolVLA policy is documented in
+The active memory occlusion policy is documented in
 [`experiments/tcow_joint_flow/README.md`](experiments/tcow_joint_flow/README.md).
 
 ## Run
@@ -118,7 +118,7 @@ checkpoint download finish:
 .venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context \
   --data memory_occlusion/datasets/memory_occlusion_tcow_25hz_240x320_v1 \
   --weights memory_occlusion/checkpoints/tcow_rgbd_pretrained_joint1200_20260930.pth \
-  --smolvla-weights memory_occlusion/checkpoints/smolvla_base_dense_expert_20261001/expert.safetensors \
+  --flow-weights memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors \
   --output memory_occlusion/checkpoints/flow_mps_25hz \
   --device mps --flow-only --batch-size 1 --cluster-size 2
 ```
@@ -128,5 +128,5 @@ each action sample, and updates only the Flow Matching branch on 25-step action
 targets every 10 frames. `--config-checkpoint` is needed only when training
 TCOW and Flow Matching jointly.
 
-The active pretrained SmolVLA expert and dense TCOW connection are documented
+The active action expert and dense TCOW connection are documented
 in [tcow_joint_flow](experiments/tcow_joint_flow/README.md).

@@ -12,8 +12,8 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 from tqdm.auto import tqdm
 
-from memory_occlusion.experiments.tcow_joint_flow.smolvla_flow import (
-    SOURCE_REPO, SOURCE_REVISION, SmolVLADenseFlow,
+from memory_occlusion.experiments.tcow_joint_flow.flow_matching import (
+    SOURCE_REPO, SOURCE_REVISION, DenseFlowMatching,
 )
 
 SOURCE_SHA256 = "7cd549ac2351fb069c0ddb3c34ad2d09cfc92b56a15dccdfc2e41467aaca01eb"
@@ -64,16 +64,16 @@ def main():
         if offset and (response.status != 206 or not response.headers.get("Content-Range", "").startswith(f"bytes {offset}-")):
             raise ValueError("download endpoint did not honor resume offset")
         total = offset + int(response.headers["Content-Length"])
-        with tqdm(total=total, desc="download SmolVLA", unit="B", unit_scale=True,
+        with tqdm(total=total, desc="download action expert", unit="B", unit_scale=True,
                   initial=offset, mininterval=5, file=sys.stdout) as progress:
             while block := response.read(4 * 1024**2):
                 stream.write(block)
                 digest.update(block)
                 progress.update(len(block))
         if original.stat().st_size != total:
-            raise ValueError("incomplete SmolVLA download")
+            raise ValueError("incomplete action expert download")
     if digest.hexdigest() != SOURCE_SHA256:
-        raise ValueError("SmolVLA source checksum differs from the pinned Hub checkpoint")
+        raise ValueError("action expert source checksum differs from the pinned Hub checkpoint")
     state = {}
     with safe_open(str(original), framework="pt", device="cpu") as tensors:
         keys = [(key, export_key(key)) for key in tensors.keys()]
@@ -84,7 +84,7 @@ def main():
                 state[destination] = tensors.get_tensor(key).contiguous()
     exported = args.output / "expert.safetensors"
     save_file(state, str(exported), metadata={"repo": SOURCE_REPO, "revision": SOURCE_REVISION})
-    model = SmolVLADenseFlow()
+    model = DenseFlowMatching()
     report = model.load_pretrained(exported)
     report["source_sha256"] = digest.hexdigest()
     exported_digest = hashlib.sha256()

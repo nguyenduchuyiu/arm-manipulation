@@ -1,11 +1,11 @@
-# TCOW with a pretrained SmolVLA action expert
+# Memory occlusion: joint tracking and action policy
 
 TCOW processes RGB-D history and the visible target mask on the first frame.
 Its final frame supplies 300 spatial tokens of width 768. A learned visual
 adapter maps them through width 256 to 960. Proprio supplies one state token,
 giving 301 dense context tokens. No predicted mask enters the policy.
 
-`smolvla_flow.py` loads the 16 action layers, gated MLPs, RMSNorms, action/time
+`flow_matching.py` loads the 16 action layers, gated MLPs, RMSNorms, action/time
 projections, state projection and eight context K/V projections from
 `lerobot/smolvla_base`, revision `d9f33c94a60fb382c90dea2164c96845bd955e28`.
 Pairs of pretrained layers form eight blocks:
@@ -40,8 +40,8 @@ including its TimeSformer dependency. It is excluded from this repository.
 The tested TCOW revision is `a72e3e13a45e4156137328e5290f9e848d360367`.
 
 ```bash
-.venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.download_smolvla \
-  --output memory_occlusion/checkpoints/smolvla_base_dense_expert_20261001
+.venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.download_action_expert \
+  --output memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001
 ```
 
 This validates the pinned Hub checkpoint checksum and exports only the needed
@@ -55,8 +55,8 @@ VLM checkpoint. A failed network transfer can be resumed with `--resume-download
   --data memory_occlusion/datasets/memory_occlusion_tcow_25hz_240x320_v1 \
   --weights memory_occlusion/checkpoints/tcow_rgbd_pretrained_joint1200_20260930.pth \
   --config-checkpoint /path/to/tcow_upstream_config_checkpoint.pth \
-  --smolvla-weights memory_occlusion/checkpoints/smolvla_base_dense_expert_20261001/expert.safetensors \
-  --output memory_occlusion/checkpoints/tcow_smolvla_dense \
+  --flow-weights memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors \
+  --output memory_occlusion/checkpoints/tcow_dense_action_expert \
   --device mps --batch-size 1 --cluster-size 2 --epochs 1
 ```
 
@@ -66,7 +66,7 @@ budget. Stream the command through `tee` in the `huy` tmux session.
 
 ## Smoke and evaluate
 
-`smoke_smolvla.py` verifies pretrained import, dense spatial conditioning,
+`smoke_policy.py` verifies pretrained import, dense spatial conditioning,
 inference and backward. Supply `--tcow-checkpoint` and `--seeker-config` (JSON
 `seeker_args` from that TCOW checkpoint's config) to also check action loss
 reaches the TCOW patch embedding and context mask loss never calls FM.

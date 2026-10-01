@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel
-from memory_occlusion.experiments.tcow_joint_flow.smolvla_flow import SmolVLADenseFlow
+from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
 
 
 def grad_sum(parameter):
@@ -39,7 +39,7 @@ def main():
         raise ValueError("--seeker-config is required to smoke the TCOW checkpoint")
     torch.set_num_threads(4)
     torch.manual_seed(0)
-    flow = SmolVLADenseFlow()
+    flow = DenseFlowMatching()
     imported = flow.load_pretrained(args.flow_weights)
     flow.set_statistics({"state_mean": [0, 0, 0, 0, 0, .5], "state_std": [.5] * 6,
                          "action_mean": [0, 0, 0, 0, 0, .5], "action_std": [.5] * 6})
@@ -49,7 +49,7 @@ def main():
     latent = torch.randn(1, 300, 768, device=device, requires_grad=True)
     state = torch.zeros(1, 6, device=device, requires_grad=True)
     action = torch.randn(1, 25, 6, device=device) * .1
-    with tqdm(total=4 if args.tcow_checkpoint else 2, desc="SmolVLA smoke", unit="check",
+    with tqdm(total=4 if args.tcow_checkpoint else 2, desc="Memory occlusion policy smoke", unit="check",
               file=sys.stdout) as progress:
         noisy, time, truth_velocity = flow.training_path(action)
         velocity, context = flow(latent, state, noisy, time)

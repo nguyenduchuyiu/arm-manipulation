@@ -119,8 +119,8 @@ class DenseContextProjection(nn.Module):
         return k, v
 
 
-class SmolVLADenseFlow(nn.Module):
-    flow_type = "smolvla_dense"
+class DenseFlowMatching(nn.Module):
+    flow_type = "dense_action_expert"
     horizon = 25
     noise_dim = 32
 
@@ -157,11 +157,11 @@ class SmolVLADenseFlow(nn.Module):
                     if not key.startswith(("visual.", "proprio.", "state_mean", "state_std",
                                            "action_mean", "action_std"))}
         if state.keys() != expected:
-            raise ValueError(f"SmolVLA export keys differ: missing={sorted(expected - state.keys())}, "
+            raise ValueError(f"action expert export keys differ: missing={sorted(expected - state.keys())}, "
                              f"extra={sorted(state.keys() - expected)}")
         result = self.load_state_dict(state, strict=False)
         if result.unexpected_keys or set(result.missing_keys) != self.state_dict().keys() - expected:
-            raise ValueError("unexpected SmolVLA load result")
+            raise ValueError("unexpected action expert load result")
         return {"source": SOURCE_REPO, "revision": SOURCE_REVISION,
                 "loaded_tensors": len(state), "loaded_parameters": sum(x.numel() for x in state.values()),
                 "new_parameters": sum(v.numel() for k, v in self.named_parameters() if k not in expected),
@@ -187,7 +187,7 @@ class SmolVLADenseFlow(nn.Module):
 
     def velocity(self, noisy_action, time, context_kv):
         if noisy_action.shape[1:] != (25, 32):
-            raise ValueError("SmolVLA uses padded [B,25,32] noisy actions")
+            raise ValueError("action expert uses padded [B,25,32] noisy actions")
         embedded = self.action_in_proj(noisy_action)
         fraction = torch.linspace(0, 1, 360, device=time.device,
                                   dtype=torch.float32 if time.device.type == "mps" else torch.float64)

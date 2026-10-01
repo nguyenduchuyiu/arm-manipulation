@@ -90,9 +90,9 @@ class JointTCOWFlow(nn.Module):
 
 def restore_joint_model(seeker, checkpoint):
     flow_type = checkpoint.get("flow_type", "dense")
-    if flow_type == "smolvla_dense":
-        from memory_occlusion.experiments.tcow_joint_flow.smolvla_flow import SmolVLADenseFlow
-        flow = SmolVLADenseFlow()
+    if flow_type == "dense_action_expert":
+        from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
+        flow = DenseFlowMatching()
     elif flow_type == "dense":
         flow = FlowPolicy()
     else:
