@@ -1,13 +1,13 @@
 # AGENTS.md
 
 # Working Env
-Conda env amed "mujoco-vla"
+uv env named ".venv"
 
-## Files and directories to ignore
+## Files and directoy management
 
-Do not read, edit, summarize, search, or use files matching these paths unless I explicitly ask for them:
+* Keep the repository root focused on the overall arm manipulation project and shared assets, controllers, and environments.
+* Put task-specific code, scenes, data tools, and docs in a top-level folder for that task (for example, `memory_occlusion/`), organized into subfolders by role.
 
-[empty]
 ## Working style
 
 Write code for a research prototype: correct, sufficient, minimal, and clean.
@@ -110,7 +110,6 @@ Do not add dependencies just for style, abstraction, or premature optimization.
 
 When adding a dependency, keep its usage direct and minimal.
 
-
 ## Comments
 
 Add comments only when they explain non-obvious research logic, math, robotics assumptions, or experiment-specific choices.
@@ -128,5 +127,42 @@ After making changes, report:
 
 ## Long running rule
 Dont read all logs but save it to a log file and grep if needed.
+For every long-running command in tmux, stream its main stdout and stderr to the tmux window while saving the same output to a log file (for example, `set -o pipefail; command 2>&1 | tee -a "$log_file"`). Do not redirect the only live output away from tmux. When several stages share a run, keep their current progress visible in a clearly named tmux window.
+Use `tqdm` for every long-running code path so progress is visible in tmux and saved in the run log.
 
 Keep the explanation concise.
+
+## Server usage rules
+
+Use `vishc-server-1` only for workloads that need its compute or Linux/CUDA environment. Keep code authoring, documentation, lightweight inspection, data analysis, and small smoke tests on the local machine whenever possible.
+
+Update code on local machine and then git push to remote, and then git pull on server to save edit time.
+
+### Resources
+
+* Use one GPU only. Set `CUDA_VISIBLE_DEVICES=0` (or another which is not full).
+* Do not use more than 8 CPU cores or 64 GB RAM.
+* Run long jobs inside the `huy` tmux session so they survive SSH disconnects.
+* Before starting a long run, check the selected GPU, available disk space, output paths, and whether another copy of the job is already running.
+* Save stdout and stderr to a log file and show the main log live in tmux. Inspect progress with targeted `tail`, `grep`, or process/GPU checks instead of repeatedly reading the full log.
+
+### Storage
+
+* Keep the server repository at `/home/hoang.pm/duchuy/arm-manipulation` limited to source code and small runtime metadata.
+* Store datasets, checkpoints, logs, videos, export shards, and other heavy artifacts under `/mnt/disk1/backup_user/hoang.pm/huy/arm-manipiulation`.
+* Use these standard subdirectories: `datasets/`, `checkpoints/`, `logs/`, and `scratch/`.
+* Treat the 100 GB `/home` account limit as hard. Check both `du -xsh /home/hoang.pm` and `df -h /home /mnt/disk1` before a run that may create substantial output.
+* Never place a large dataset, checkpoint, cache, raw video collection, or temporary export physically under `/home`.
+* Use fresh, experiment-specific output directories and fail if they already exist. Do not silently overwrite a previous run.
+* Delete temporary shards, abandoned exports, debug dumps, and obsolete intermediate checkpoints after the final artifact has been verified. Retain the final checkpoint and any checkpoint explicitly needed for comparison or recovery.
+* Do not delete or modify another user's directories, shared caches, environments, or processes.
+
+### Local and server responsibilities
+
+* Develop and review code locally first. Run a syntax check or small smoke test locally before starting an expensive server job.
+* Treat the local repository as the source of truth. Prefer committing/pushing locally and pulling on the server; avoid editing the same source file independently in both places.
+* Send only the code and configuration required to run the experiment. Do not use the server as a documentation archive or general workspace.
+* Run GPU training, large-scale simulation collection, full dataset export, and heavy closed-loop evaluation on the server.
+* Keep research documentation only in local `docs/research/`. The canonical report is `docs/research/REPORT.md`.
+* After each experiment, copy important small outputs back to the local experiment folder: configuration, audit JSON, `summary.json`, `results.jsonl`, selected plots/images/videos, and the useful final log excerpt.
+* For a large final checkpoint, keep it on `/mnt`, record its exact path and checksum in the local report, and copy it to the local machine only when it is needed there.

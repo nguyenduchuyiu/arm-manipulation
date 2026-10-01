@@ -8,9 +8,15 @@ venv/
 *.mp4
 /data
 *.log
+MUJOCO_LOG.TXT
 /LIBERO/
 /SimVLA/
 /panda
 /lerobot-nexarm
 /outputs
 assets/hope-dataset
+*/docs
+*/third_party
+memory_occlusion/datasets/
+memory_occlusion/checkpoints/
+memory_occlusion/experiments/*/results/

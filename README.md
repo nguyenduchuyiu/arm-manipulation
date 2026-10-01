@@ -38,6 +38,9 @@ from envs import HopeNexArmEnv
 env = HopeNexArmEnv()
 observation, info = env.reset(seed=42)
 observation, reward, terminated, truncated, info = env.step(env.home_action)
+# RGB and aligned metric depth from the same front camera:
+front_rgb = observation["observation.images.front"]
+front_depth_m = observation["observation.depth.front"]
 env.close()
 ```
 
@@ -56,3 +59,10 @@ hardware-compatible raw servo convention (`0..4095`).
 `lerobot-nexarm/` is a separate checkout for leader/follower teleoperation,
 recording demonstrations, and deploying policies on the physical NexArm. The
 HOPE MuJoCo environment does not import it.
+
+## Memory and occlusion episodes
+
+The complete RGB-D memory task, physical expert, episode generator, and dataset
+loader live in [`memory_occlusion/`](memory_occlusion/README.md). Run
+`.venv/bin/python -m memory_occlusion.dataset.generate_samples` to create
+four sample demonstrations.

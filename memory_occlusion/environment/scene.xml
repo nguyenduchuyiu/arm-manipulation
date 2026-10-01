@@ -1,0 +1,103 @@
+<mujoco model="NexArm memory occlusion MVP">
+  <include file="../../assets/robot/robot.xml"/>
+  <compiler meshdir="../../assets/robot/meshes"/>
+  <asset>
+    <texture name="butter_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Butter.png"/>
+    <texture name="popcorn_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Popcorn.png"/>
+    <texture name="milk_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Milk.png"/>
+    <texture name="tuna_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Tuna.png"/>
+    <material name="butter_mat" texture="butter_tex"/>
+    <material name="popcorn_mat" texture="popcorn_tex"/>
+    <material name="milk_mat" texture="milk_tex"/>
+    <material name="tuna_mat" texture="tuna_tex"/>
+    <mesh name="butter_mesh" file="../../hope-dataset/meshes/eval/Butter.obj" scale="0.004 0.004 0.004"/>
+    <mesh name="popcorn_mesh" file="../../hope-dataset/meshes/eval/Popcorn.obj" scale="0.0035 0.0035 0.0035"/>
+    <mesh name="milk_mesh" file="../../hope-dataset/meshes/eval/Milk.obj" scale="0.003 0.003 0.003"/>
+    <mesh name="tuna_mesh" file="../../hope-dataset/meshes/eval/Tuna.obj" scale="0.004 0.004 0.004"/>
+  </asset>
+  <visual>
+    <headlight ambient="0.3 0.3 0.3" diffuse="0.4 0.4 0.4" specular="0.15 0.15 0.15"/>
+  </visual>
+  <worldbody>
+    <geom name="floor" type="plane" pos="0 0 -0.75" size="2 2 0.1" rgba="0.78 0.79 0.76 1"/>
+    <geom name="table_top" type="box" pos="0.54 -0.10 -0.025" size="0.55 0.43 0.025"
+          rgba="0.57 0.37 0.22 1" friction="1 0.01 0.001"/>
+    <geom type="box" pos="0.06 -0.48 -0.375" size="0.025 0.025 0.35" rgba="0.25 0.25 0.27 1"/>
+    <geom type="box" pos="0.06 0.28 -0.375" size="0.025 0.025 0.35" rgba="0.25 0.25 0.27 1"/>
+    <geom type="box" pos="1.02 -0.48 -0.375" size="0.025 0.025 0.35" rgba="0.25 0.25 0.27 1"/>
+    <geom type="box" pos="1.02 0.28 -0.375" size="0.025 0.025 0.35" rgba="0.25 0.25 0.27 1"/>
+    <geom name="chair_seat" type="box" pos="0.20 0.67 -0.35" size="0.22 0.22 0.025" rgba="0.2 0.33 0.43 1"/>
+    <geom name="chair_back" type="box" pos="0.20 0.87 -0.05" size="0.22 0.025 0.30" rgba="0.2 0.33 0.43 1"/>
+    <geom type="box" pos="0.02 0.50 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
+    <geom type="box" pos="0.02 0.84 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
+    <geom type="box" pos="0.38 0.50 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
+    <geom type="box" pos="0.38 0.84 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
+    <geom name="cover_drop_zone" type="box" pos="0.30 -0.04 0.0005" size="0.11 0.11 0.0005"
+          rgba="0.12 0.34 0.22 1" contype="0" conaffinity="0"/>
+    <geom name="target_drop_zone" type="box" pos="0.79 -0.04 0.0005" size="0.07 0.07 0.0005"
+          rgba="0.12 0.27 0.68 1" contype="0" conaffinity="0"/>
+    <camera name="overview" pos="0.54 -0.78 0.55" xyaxes="1 0 0 0 0.51865 0.85499" fovy="50"/>
+    <light pos="0.2 -0.5 1.4" dir="0.2 0.3 -1" diffuse="0.8 0.8 0.8"/>
+    <light pos="0.9 0.2 1.1" dir="-0.2 -0.2 -1" diffuse="0.35 0.35 0.35"/>
+
+    <body name="Butter" pos="0.45 -0.27 0.010565">
+      <freejoint name="Butter_joint"/>
+      <geom name="Butter_visual" type="mesh" mesh="butter_mesh" material="butter_mat"
+            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
+      <geom name="Butter_collision" type="box" size="0.020660 0.004787 0.010565"
+            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    </body>
+    <body name="Popcorn" pos="0.45 -0.21 0.014870">
+      <freejoint name="Popcorn_joint"/>
+      <geom name="Popcorn_visual" type="mesh" mesh="popcorn_mesh" material="popcorn_mat"
+            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
+      <geom name="Popcorn_collision" type="box" size="0.022136 0.006693 0.014870"
+            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    </body>
+    <body name="Milk" pos="0.65 -0.27 0.028553">
+      <freejoint name="Milk_joint"/>
+      <geom name="Milk_visual" type="mesh" mesh="milk_mesh" material="milk_mat"
+            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
+      <geom name="Milk_collision" type="box" size="0.010823 0.010984 0.028553"
+            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    </body>
+    <body name="Tuna" pos="0.65 -0.21 0.006494">
+      <freejoint name="Tuna_joint"/>
+      <geom name="Tuna_visual" type="mesh" mesh="tuna_mesh" material="tuna_mat"
+            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
+      <geom name="Tuna_collision" type="box" size="0.013163 0.014144 0.006494"
+            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    </body>
+
+    <body name="cover_a" pos="-2 0 0.003">
+      <freejoint name="cover_a_joint"/>
+      <geom name="cover_a_top" type="box" pos="0 0 0.072" size="0.08 0.065 0.004"
+            mass="0.014" rgba="0.58 0.58 0.58 1" friction="1 0.01 0.001"/>
+      <geom name="cover_a_left" type="box" pos="-0.077 0 0.035" size="0.003 0.065 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_a_right" type="box" pos="0.077 0 0.035" size="0.003 0.065 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_a_front" type="box" pos="0 -0.062 0.035" size="0.074 0.003 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_a_back" type="box" pos="0 0.062 0.035" size="0.074 0.003 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_a_handle" type="box" pos="0 0 0.120" size="0.012 0.012 0.042"
+            mass="0.0048" rgba="0.58 0.58 0.58 1" friction="1.4 0.01 0.001"/>
+    </body>
+    <body name="cover_b" pos="2 0 0.003">
+      <freejoint name="cover_b_joint"/>
+      <geom name="cover_b_top" type="box" pos="0 0 0.072" size="0.08 0.065 0.004"
+            mass="0.014" rgba="0.58 0.58 0.58 1" friction="1 0.01 0.001"/>
+      <geom name="cover_b_left" type="box" pos="-0.077 0 0.035" size="0.003 0.065 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_b_right" type="box" pos="0.077 0 0.035" size="0.003 0.065 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_b_front" type="box" pos="0 -0.062 0.035" size="0.074 0.003 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_b_back" type="box" pos="0 0.062 0.035" size="0.074 0.003 0.035"
+            mass="0.0028" rgba="0.58 0.58 0.58 1"/>
+      <geom name="cover_b_handle" type="box" pos="0 0 0.120" size="0.012 0.012 0.042"
+            mass="0.0048" rgba="0.58 0.58 0.58 1" friction="1.4 0.01 0.001"/>
+    </body>
+  </worldbody>
+</mujoco>

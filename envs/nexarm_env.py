@@ -29,6 +29,9 @@ class NexArmEnv(gym.Env):
     observation.images.front:
       Static external RGB camera.
 
+    observation.depth.front:
+      Metric depth from the same external camera, in metres.
+
     observation.images.wrist:
       RGB camera attached to cam_mount.
 
@@ -193,6 +196,12 @@ class NexArmEnv(gym.Env):
                     shape=(self.image_height, self.image_width, 3),
                     dtype=np.uint8,
                 ),
+                "observation.depth.front": spaces.Box(
+                    low=0.0,
+                    high=np.inf,
+                    shape=(self.image_height, self.image_width),
+                    dtype=np.float32,
+                ),
                 "observation.images.wrist": spaces.Box(
                     low=0,
                     high=255,
@@ -347,10 +356,17 @@ class NexArmEnv(gym.Env):
         ).copy()
 
     def _get_observation(self) -> dict[str, np.ndarray]:
+        front = self._render_camera("front")
+        wrist = self._render_camera("wrist")
+        self.renderer.enable_depth_rendering()
+        self.renderer.update_scene(self.data, camera="front")
+        depth = self.renderer.render().astype(np.float32, copy=True)
+        self.renderer.disable_depth_rendering()
         return {
             "observation.state": self._robot_qpos(),
-            "observation.images.front": self._render_camera("front"),
-            "observation.images.wrist": self._render_camera("wrist"),
+            "observation.images.front": front,
+            "observation.images.wrist": wrist,
+            "observation.depth.front": depth,
         }
 
     def _get_info(self) -> dict[str, Any]:
