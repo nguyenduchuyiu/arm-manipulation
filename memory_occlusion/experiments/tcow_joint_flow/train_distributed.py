@@ -60,7 +60,8 @@ def main():
     args.batch_size = sum(args.rank_batch_sizes)
     torch.set_num_threads(2)
     torch.cuda.set_device(local_rank)
-    dist.init_process_group("nccl", timeout=timedelta(hours=2))
+    dist.init_process_group("nccl", timeout=timedelta(hours=2),
+                            device_id=torch.device("cuda", local_rank))
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
     train_rows, val_rows = split_rows(args.data)
@@ -210,6 +211,9 @@ def main():
                             raise AssertionError("mask-only batch created FM gradients")
                         values = [float(p.float().abs().sum()) if p is not None else None
                                   for p in (patch, head, out)]
+                        required = values if is_action else values[:2]
+                        if not args.flow_only and any(v is None or not np.isfinite(v) or v <= 0 for v in required):
+                            raise AssertionError(f"missing or nonfinite gradients on rank {rank}")
                         if rank == 0:
                             print(json.dumps({"event": "gradient_smoke", "action_phase": is_action,
                                               "latent_shape": list(latent.shape),
@@ -217,7 +221,8 @@ def main():
                                               "patch_grad": values[0], "mask_head_grad": values[1],
                                               "flow_grad": values[2]}), flush=True)
                         checked_phases.add(is_action)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
+                                                   error_if_nonfinite=True)
                     optimizer.step()
                     step += 1
                     logs = torch.stack((action_loss.detach(), mask_loss.detach()))
