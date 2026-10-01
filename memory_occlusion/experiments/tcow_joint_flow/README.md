@@ -66,6 +66,26 @@ budget. Stream the command through `tee` in the `huy` tmux session.
 
 ## Smoke and evaluate
 
+For the additional server-2 run, `train_distributed_server.sh` uses `torchrun`
+on two or three selected GPUs. `--rank-batch-sizes` specifies each GPU's batch;
+their sum is the global batch. It preserves the full sample plan and uses
+zero-weight dummy samples only when a final partial batch leaves a rank empty.
+Action loss is weighted by the global count of valid action steps. Each rank
+uses the original mask loss on its local examples, weighted by its sample count.
+Rank zero writes checkpoints and evaluates the same validation episodes.
+
+```bash
+CUDA_VISIBLE_DEVICES=2,5 RUN_NAME=memory_occlusion_ddp_smoke_20261001 \
+  bash memory_occlusion/experiments/tcow_joint_flow/train_distributed_server.sh \
+  --rank-batch-sizes 8 4 --max-clusters 1 --smoke-steps 4
+```
+
+After that smoke passes, omit `--max-clusters` and `--smoke-steps`, select a new
+`RUN_NAME`, and set `--epochs 5`. Run through `tee` inside `huy:memory_occlusion`.
+Each rank keeps eight-episode clusters and prefetches the next cluster; CPU
+affinity must cap the entire job to eight cores. Do not start if summed RAM
+or any selected GPU's memory exceeds the experiment limits.
+
 `smoke_policy.py` verifies pretrained import, dense spatial conditioning,
 inference and backward. Supply `--tcow-checkpoint` and `--seeker-config` (JSON
 `seeker_args` from that TCOW checkpoint's config) to also check action loss

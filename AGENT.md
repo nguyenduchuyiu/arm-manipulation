@@ -138,11 +138,11 @@ Use `vishc-server-1` only for workloads that need its compute or Linux/CUDA envi
 
 Update code on local machine and then git push to remote, and then git pull on server to save edit time.
 
-Use the single server workspace `/home/hoang.pm/duchuy/arm-manipulation`; do not create additional experiment worktrees. Name project branches, runs, and artifacts after `memory_occlusion`. Keep names of reference models only in source attribution and checkpoint provenance.
+Use one workspace per server: `/home/hoang.pm/duchuy/arm-manipulation` on `vishc-server-1`, and `/mnt/disk1/backup_user/25thanh.tk/arm-manipulation` on `vishc-server-2`. Do not create additional experiment worktrees. Name project branches, runs, and artifacts after `memory_occlusion`. Keep names of reference models only in source attribution and checkpoint provenance.
 
 ### Resources
 
-* Use one GPU only. Set `CUDA_VISIBLE_DEVICES=0` (or another which is not full).
+* Default to one GPU. The user authorized up to three GPUs for the additional `vishc-server-2` run. Set `CUDA_VISIBLE_DEVICES` explicitly and use only GPUs with enough free memory.
 * Do not use more than 8 CPU cores or 64 GB RAM.
 * Run long jobs inside the `huy` tmux session so they survive SSH disconnects.
 * Before starting a long run, check the selected GPU, available disk space, output paths, and whether another copy of the job is already running.
@@ -152,6 +152,7 @@ Use the single server workspace `/home/hoang.pm/duchuy/arm-manipulation`; do not
 
 * Keep the server repository at `/home/hoang.pm/duchuy/arm-manipulation` limited to source code and small runtime metadata.
 * Store datasets, checkpoints, logs, videos, export shards, and other heavy artifacts under `/mnt/disk1/backup_user/hoang.pm/huy/arm-manipiulation`.
+* On `vishc-server-2`, read the existing dataset/checkpoints from that shared mount; write new artifacts under `/mnt/disk1/backup_user/25thanh.tk/memory_occlusion`. Its SSH account is `25thanh.tk`, so do not write to the other account's artifact directories.
 * Use these standard subdirectories: `datasets/`, `checkpoints/`, `logs/`, and `scratch/`.
 * Treat the 100 GB `/home` account limit as hard. Check both `du -xsh /home/hoang.pm` and `df -h /home /mnt/disk1` before a run that may create substantial output.
 * Never place a large dataset, checkpoint, cache, raw video collection, or temporary export physically under `/home`.

@@ -72,7 +72,7 @@ def evaluate(model, root, rows, device):
             "action_mae": float(np.mean(action_errors))}
 
 
-def main():
+def argument_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--weights", type=Path, required=True)
@@ -95,7 +95,11 @@ def main():
     p.add_argument("--flow-only", action="store_true",
                    help="freeze TCOW and optimize only the action flow")
     p.add_argument("--seed", type=int, default=0)
-    args = p.parse_args()
+    return p
+
+
+def main():
+    args = argument_parser().parse_args()
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable")
     if args.device == "mps" and not torch.backends.mps.is_available():

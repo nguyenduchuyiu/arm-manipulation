@@ -78,12 +78,14 @@ class JointTCOWFlow(nn.Module):
         dense = output[0]
         self._latent = dense[:, :, -1].flatten(2).transpose(1, 2)
 
-    def forward(self, rgbd, query, proprio, noisy_action, time):
+    def forward(self, rgbd, query, proprio=None, noisy_action=None, time=None):
         self._latent = None
         mask_logits, _flags = self.tcow(rgbd, query)
         if self._latent is None:
             raise RuntimeError("TCOW backbone hook did not capture dense features")
         latent = self._latent
+        if noisy_action is None:
+            return mask_logits, None, latent, None
         velocity, context = self.flow(latent, proprio, noisy_action, time)
         return mask_logits, velocity, latent, context
 
