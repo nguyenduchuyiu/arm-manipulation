@@ -24,9 +24,9 @@ from memory_occlusion.experiments.tcow_joint_flow.model import expand_depth_chan
 
 
 class GeometryProbe(nn.Module):
-    def __init__(self):
+    def __init__(self, width=768):
         super().__init__()
-        self.readout = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 16), nn.SiLU(),
+        self.readout = nn.Sequential(nn.LayerNorm(width), nn.Linear(width, 16), nn.SiLU(),
                                      nn.Flatten(1), nn.Linear(300 * 16, 3))
 
     def forward(self, tokens):
@@ -181,6 +181,35 @@ def error_summary(prediction, truth):
             "within_5mm": float((distance <= 5).mean()), "within_10mm": float((distance <= 10).mean())}
 
 
+def project_features(features, checkpoint, stage, device):
+    """Apply only the frozen checkpoint adapter to existing raw TCOW tokens."""
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=False, mmap=True)
+    if saved["flow_type"] != "dense_action_expert":
+        raise ValueError("adapter probe requires the dense action expert checkpoint")
+    # Preserve the seed used by the readout and its shuffled minibatches.
+    with torch.random.fork_rng(devices=[]):
+        adapter = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
+                                nn.SiLU(), nn.Linear(256, 960))
+    weights = {key.removeprefix("flow.visual."): value for key, value in saved["model"].items()
+               if key.startswith("flow.visual.")}
+    adapter.load_state_dict(weights, strict=True)
+    adapter = adapter.to(device).eval().requires_grad_(False)
+    if stage == "bottleneck":
+        adapter = adapter[:3]  # 256 channels after SiLU, before expansion.
+    width = 256 if stage == "bottleneck" else 960
+    projected = torch.empty((len(features), 300, width), dtype=torch.bfloat16)
+    with torch.no_grad():
+        for start in tqdm(range(0, len(features), 64), desc=f"project {stage}", unit="batch",
+                          mininterval=5, file=sys.stdout):
+            part = features[start:start + 64].to(device)
+            with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"):
+                value = adapter(part if device == "cuda" else part.float())
+            if not torch.isfinite(value).all():
+                raise ValueError("nonfinite adapter features")
+            projected[start:start + len(part)] = value.cpu().to(torch.bfloat16)
+    return projected
+
+
 def fit(args, cache):
     records = cache["records"]
     train_context = [i for i, r in enumerate(records) if r["split"] == "train" and r["phase"] == "context"]
@@ -192,7 +221,7 @@ def fit(args, cache):
     labels = cache["labels"].to(args.device)
     center = labels[train].mean(dim=0)
     target = (labels - center) / .1
-    model = GeometryProbe().to(args.device)
+    model = GeometryProbe(features.shape[-1]).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
     best, best_state, history = float("inf"), None, []
     for epoch in tqdm(range(args.epochs), desc="train geometry probe", unit="epoch",
@@ -242,12 +271,14 @@ def fit(args, cache):
         record["error_mm"] = float(np.linalg.norm(prediction[index] - truth[index]) * 1000)
     torch.save({"model": {k: v.cpu() for k, v in model.state_dict().items()},
                 "target_center": center.cpu(), "target_scale_m": .1, "source_step": cache["source_step"],
+                "feature_stage": args.feature_stage, "feature_width": features.shape[-1],
                 "provenance": cache["provenance"]}, args.output / "probe.pt")
     (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
     (args.output / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
     summary = {"source_step": cache["source_step"], "train_samples": len(train), "val_samples": len(val),
                "probe_parameters": sum(p.numel() for p in model.parameters()), "best_val_mean_mm": best,
                "train_phases": args.train_phases,
+               "feature_stage": args.feature_stage, "feature_width": features.shape[-1],
                "context_proprio_range": cache["context_proprio_range"], "groups": groups,
                "label": "world cover pose applied to local grasp marker [0,0,0.130] m",
                "protocol": ("Train only context frames; choose by scene-disjoint validation. Close-frame results test transfer to expert arm/contact observations."
@@ -267,9 +298,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=400)
     parser.add_argument("--train-phases", choices=("context", "all"), default="context")
+    parser.add_argument("--feature-stage", choices=("tcow", "bottleneck", "adapter"), default="tcow",
+                        help="raw 768 tokens, post-SiLU 256 tokens, or final 960 adapter tokens")
     parser.add_argument("--device", choices=("cuda", "mps", "cpu"), default="cuda")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
+    if args.feature_stage != "tcow" and not args.cache.is_file():
+        raise FileNotFoundError("adapter probes require an existing raw TCOW cache")
     if args.output.exists():
         raise FileExistsError(args.output)
     args.output.mkdir(parents=True)
@@ -294,6 +329,8 @@ def main():
     cache = torch.load(args.cache, map_location="cpu", weights_only=False) if args.cache.exists() else extract(args, rows, provenance)
     if cache["provenance"] != provenance:
         raise ValueError("cached features have different checkpoint/data provenance")
+    if args.feature_stage != "tcow":
+        cache["features"] = project_features(cache["features"], args.checkpoint, args.feature_stage, args.device)
     fit(args, cache)
 
 
