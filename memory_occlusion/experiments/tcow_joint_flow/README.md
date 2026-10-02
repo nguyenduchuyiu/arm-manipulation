@@ -72,7 +72,34 @@ their sum is the global batch. It preserves the full sample plan and uses
 zero-weight dummy samples only when a final partial batch leaves a rank empty.
 Action loss is weighted by the global count of valid action steps. Each rank
 uses the original mask loss on its local examples, weighted by its sample count.
-Rank zero writes checkpoints and evaluates the same validation episodes.
+Rank zero writes checkpoints. Validation episodes are divided between ranks;
+error sums and valid counts are reduced across all ranks.
+
+Validation uses every valid action start at stride ten, including short final
+chunks with padding excluded. `action_mae` covers all valid entries of the
+25-action chunks; `action_mae_first`, `action_mae_first10`, per-offset and
+per-joint errors expose where the policy fails. Cover/object close phases
+report gripper MAE and binary error at threshold 0.5. Counts include repeated
+frames in overlapping predicted chunks. Metrics remain in joint-limit units
+after reversing the flow's mean/std normalization. This protocol supersedes
+the old three-chunk-per-episode validation, so their aggregate MAEs are not
+directly comparable.
+
+Add `--closed-loop-every-evals 4` to either training command to also run one
+fixed validation episode per target every fourth evaluation. The default zero
+disables simulation. Rollouts use K10 and the existing 1,000-frame total budget
+(including context), save mask videos and summaries under
+`validation/step_<step>/`, and report correct-cover selection/removal, target
+grasp and task-success rates. Cover removal requires the correct cover in its
+drop zone. This is success within that frame budget, which may be shorter
+than an expert demonstration. Test scenes are excluded. `best.pt` continues to
+use the expanded offline `action_mae`; rollout scores are reported separately.
+
+Run the padding/phase and distributed-aggregation regression checks locally:
+
+```bash
+.venv/bin/python -m unittest memory_occlusion.experiments.tcow_joint_flow.test_validation -v
+```
 
 ```bash
 CUDA_VISIBLE_DEVICES=2,5 RUN_NAME=memory_occlusion_ddp_smoke_20261001 \

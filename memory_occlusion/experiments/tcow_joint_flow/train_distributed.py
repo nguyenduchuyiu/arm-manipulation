@@ -28,6 +28,7 @@ from memory_occlusion.experiments.tcow_joint_flow.tcow import (
 from memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context import (
     argument_parser, evaluate, save_checkpoint,
 )
+from memory_occlusion.experiments.tcow_joint_flow.validation import evaluate_closed_loop
 
 
 def rank_batch(batch, sizes, rank):
@@ -85,6 +86,8 @@ def main():
     parser.add_argument("--smoke-steps", type=int, choices=(0, 4), default=0,
                         help="alternate mask/action batches, verify synchronization, then exit")
     args = parser.parse_args()
+    if args.closed_loop_every_evals < 0:
+        raise ValueError("closed-loop-every-evals must be nonnegative")
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -307,8 +310,11 @@ def main():
                 del episodes
                 if (cluster_index + 1) % args.eval_every_clusters == 0 or cluster_index + 1 == len(clusters) * args.epochs:
                     dist.barrier()
+                    metrics = evaluate(model, args.data, val_rows, "cuda", distributed=True)
                     if rank == 0:
-                        metrics = evaluate(model, args.data, val_rows, "cuda")
+                        if args.closed_loop_every_evals and (len(history) + 1) % args.closed_loop_every_evals == 0:
+                            metrics["closed_loop"] = evaluate_closed_loop(
+                                model, args.data, val_rows, args.output / "validation" / f"step_{step}", step)
                         if best < 0 or metrics["action_mae"] < best:
                             best = metrics["action_mae"]
                             save_checkpoint(args.output / "best.pt", model, step, args, metrics)

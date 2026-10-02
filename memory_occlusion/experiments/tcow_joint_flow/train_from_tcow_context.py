@@ -15,13 +15,14 @@ import torch
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.data import (
-    joint_clip, load_joint_episode, policy_statistics, training_clip, training_samples,
+    load_joint_episode, policy_statistics, training_clip, training_samples,
 )
 from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel
 from memory_occlusion.experiments.tcow_joint_flow.data import split_rows
 from memory_occlusion.experiments.tcow_joint_flow.tcow import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
 )
+from memory_occlusion.experiments.tcow_joint_flow.validation import evaluate, evaluate_closed_loop
 
 
 def load_cluster(root, rows):
@@ -42,36 +43,6 @@ def save_checkpoint(path, model, step, args, metrics):
     temp.replace(path)
 
 
-@torch.inference_mode()
-def evaluate(model, root, rows, device):
-    model.eval()
-    scores = []
-    action_errors = []
-    for row in tqdm(rows, desc="validate joint", unit="episode", mininterval=5, file=sys.stdout):
-        episode = load_joint_episode(root / row["path"])
-        ends = episode["valid_ends"]
-        selected = np.unique(ends[np.linspace(0, len(ends) - 1, 3).astype(int)])
-        for end in selected:
-            rgbd, query, truth, proprio, action, _frames = joint_clip(episode, int(end), device)
-            generator_device = "cpu" if device == "mps" else device
-            generator = torch.Generator(device=generator_device).manual_seed(int(row["seed"]) + int(end))
-            noise = model.flow.sample_noise(len(action), generator_device, generator).to(device)
-            with torch.autocast(device_type=device, dtype=torch.bfloat16):
-                model._latent = None
-                logits, _ = model.tcow(rgbd, query)
-                latent = model._latent
-                estimate = model.flow.sample(latent, proprio, noise)
-            action_errors.append(float((estimate - action).abs().mean()))
-            prediction = logits[0, :, -1].float() > 0
-            target = truth[0, :, -1].bool()
-            iou = ((prediction & target).sum(dim=(-1, -2)).float() /
-                   (prediction | target).sum(dim=(-1, -2)).clamp(min=1)).cpu().tolist()
-            scores.append(iou)
-    mean = np.mean(scores, axis=0)
-    return {**dict(zip(("target_iou", "occluder_iou", "container_iou"), map(float, mean))),
-            "action_mae": float(np.mean(action_errors))}
-
-
 def argument_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, required=True)
@@ -88,6 +59,8 @@ def argument_parser():
     p.add_argument("--eval-every-clusters", type=int, default=20)
     p.add_argument("--max-clusters", type=int, default=0)
     p.add_argument("--max-val-episodes", type=int, default=80)
+    p.add_argument("--closed-loop-every-evals", type=int, default=0,
+                   help="run fixed validation scenes every N evaluations; 0 disables simulation")
     p.add_argument("--tcow-lr", type=float, default=2e-5)
     p.add_argument("--flow-lr", type=float, default=1e-4)
     p.add_argument("--mask-loss-weight", type=float, default=.2)
@@ -100,6 +73,8 @@ def argument_parser():
 
 def main():
     args = argument_parser().parse_args()
+    if args.closed_loop_every_evals < 0:
+        raise ValueError("closed-loop-every-evals must be nonnegative")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable")
     if args.device == "mps" and not torch.backends.mps.is_available():
@@ -277,6 +252,9 @@ def main():
                 if ((cluster_index + 1) % args.eval_every_clusters == 0 or
                         cluster_index + 1 == len(clusters) * args.epochs):
                     metrics = evaluate(model, args.data, val_rows, device)
+                    if args.closed_loop_every_evals and (len(history) + 1) % args.closed_loop_every_evals == 0:
+                        metrics["closed_loop"] = evaluate_closed_loop(
+                            model, args.data, val_rows, args.output / "validation" / f"step_{step}", step)
                     value = metrics["action_mae"]
                     if best < 0 or value < best:
                         best = value

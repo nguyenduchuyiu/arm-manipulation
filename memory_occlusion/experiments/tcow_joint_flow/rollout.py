@@ -28,20 +28,21 @@ def physical_action(action, limits):
 
 @torch.inference_mode()
 def infer(model, rgbs, depths, query_visible, proprio=None, noise=None):
+    device = next(model.parameters()).device
     index = np.rint(np.linspace(0, len(rgbs) - 1, 30)).astype(int)
-    rgb = torch.from_numpy(np.stack([rgbs[i] for i in index])).permute(3, 0, 1, 2).cuda()
+    rgb = torch.from_numpy(np.stack([rgbs[i] for i in index])).permute(3, 0, 1, 2).to(device)
     rgb = (rgb.float() / 255 - .45) / .225
-    depth = torch.from_numpy(np.stack([depths[i] for i in index])).cuda()
+    depth = torch.from_numpy(np.stack([depths[i] for i in index])).to(device)
     depth = ((depth.clamp(.4, 1.6) - 1.0) / .6)[None]
     rgbd = torch.cat((rgb, depth), dim=0)[None]
-    query = torch.zeros((1, 1, 30, 240, 320), device="cuda")
-    query[0, 0, 0] = torch.from_numpy(query_visible).cuda()
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+    query = torch.zeros((1, 1, 30, 240, 320), device=device)
+    query[0, 0, 0] = torch.from_numpy(query_visible).to(device)
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
         model._latent = None
         logits, _ = model.tcow(rgbd, query)
         latent = model._latent
         if proprio is not None:
-            state = torch.from_numpy(proprio[None]).cuda()
+            state = torch.from_numpy(proprio[None]).to(device)
             estimate = model.flow.sample(latent, state, noise)
     masks = (logits[0, :, -1].float() > 0).cpu().numpy()
     chunk = estimate[0].float().cpu().numpy() if proprio is not None else None
@@ -59,12 +60,23 @@ def main():
                    help="25 Hz video frames from the first reveal frame, including shuffle")
     p.add_argument("--execute-chunk", type=int, default=10)
     args = p.parse_args()
+    torch.set_num_threads(4)
+    config = torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
+    seeker_args = dict(config["seeker_args"], tracker_pretrained=False)
+    tcow = expand_depth_channel(Seeker(logging.getLogger("tcow"), **seeker_args))
+    saved = torch.load(args.checkpoint, map_location="cpu", weights_only=False, mmap=True)
+    model = restore_joint_model(tcow, saved).cuda().eval()
+    run_rollout(model, args, saved["step"])
+
+
+@torch.inference_mode()
+def run_rollout(model, args, checkpoint_step):
+    model.eval()
     if not 1 <= args.execute_chunk <= 25:
         raise ValueError("execute-chunk must be between 1 and the 25-step policy horizon")
     if args.output.exists():
         raise FileExistsError(args.output)
     args.output.mkdir(parents=True)
-    torch.set_num_threads(4)
     meta = json.loads((args.reference_episode / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
         raise ValueError("expected 25 Hz 240x320 reference scene")
@@ -72,12 +84,6 @@ def main():
     action_budget = args.max_total_frames - context_frames
     if action_budget < 1:
         raise ValueError(f"max-total-frames must exceed {context_frames} context frames")
-    config = torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
-    seeker_args = dict(config["seeker_args"])
-    seeker_args["tracker_pretrained"] = False
-    tcow = expand_depth_channel(Seeker(logging.getLogger("tcow"), **seeker_args))
-    saved = torch.load(args.checkpoint, map_location="cpu", weights_only=False, mmap=True)
-    model = restore_joint_model(tcow, saved).cuda().eval()
     env = MemoryOcclusionEnv(context_fps=25, resolution=320, max_episode_steps=action_budget)
     env.reset(seed=meta["seed"], options={"upright_targets": True, "layout": meta["layout"]})
     env.data.time = 0.0
@@ -102,7 +108,8 @@ def main():
                    for name in env.cover_qadr}
     initial_target_z = float(env.target_positions()[target][2])
     limits = env.model.actuator_ctrlrange.copy()
-    fixed_noise = model.flow.sample_noise(1, "cpu", torch.Generator().manual_seed(0)).cuda()
+    fixed_noise = model.flow.sample_noise(1, "cpu", torch.Generator().manual_seed(0)).to(
+        next(model.parameters()).device)
     writer = iio.imopen(args.output / "rollout_masks_25hz.mp4", "w", plugin="pyav")
     writer.init_video_stream("libx264", fps=25, pixel_format="yuv420p")
     trace = []
@@ -179,7 +186,7 @@ def main():
     with (args.output / "policy_chunks.jsonl").open("w") as stream:
         for row in policy_chunks:
             stream.write(json.dumps(row) + "\n")
-    result = {"reference_episode": str(args.reference_episode), "checkpoint_step": saved["step"],
+    result = {"reference_episode": str(args.reference_episode), "checkpoint_step": checkpoint_step,
               "target": target, "seed": meta["seed"], "layout": meta["layout"],
               "query_pixels": int(query_visible.sum()), "context_frames": context_calls,
               "action_steps": len(trace), "fps": 25, "video_frames": context_calls + len(trace),
@@ -187,6 +194,9 @@ def main():
               "execute_chunk": args.execute_chunk, "policy_calls": policy_calls,
               "selected_cover": env.selected_cover, "correct_cover": meta["correct_cover_body"],
               "cover_choice_correct": env.selected_cover == meta["correct_cover_body"],
+              "cover_removed": bool(env._cover_in_drop_zone() and
+                                    env.selected_cover == meta["correct_cover_body"]),
+              "target_grasped": bool(env.target_grasped),
               "target_lift_m": max_lift,
               "success": bool(env.success and env.selected_cover == meta["correct_cover_body"]),
               "failure_reason": env.failure_reason, "stop_reason": reason,
@@ -194,6 +204,7 @@ def main():
               "note": "Only the first-frame visible GT query mask is supplied to TCOW; all later RGB-D and proprio are live sim observations."}
     (args.output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"event": "complete", **result}), flush=True)
+    return result
 
 
 if __name__ == "__main__":
