@@ -17,11 +17,11 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.data import (
-    load_joint_episode, policy_statistics, sample_index, split_rows, training_clip,
+    load_joint_episode, load_policy_episode, policy_statistics, sample_index, split_rows, training_clip,
     training_samples,
 )
 from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
-from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel
+from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel, load_training_tracker
 from memory_occlusion.experiments.tcow_joint_flow.tcow import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
 )
@@ -39,14 +39,14 @@ def rank_batch(batch, sizes, rank):
     return (items if items else batch[:1]), len(items)
 
 
-def cache_cluster(data_root, rows, destination):
+def cache_cluster(data_root, rows, destination, flow_only=False):
     """Decode once into temporary RAM files that every rank can map."""
     destination.mkdir()
     occupied = sum(p.stat().st_size for p in destination.parent.rglob("*.npy"))
     descriptors = []
     for index, row in enumerate(tqdm(rows, desc="load shared episodes", unit="episode",
                                      mininterval=5, file=sys.stdout)):
-        episode = load_joint_episode(data_root / row["path"])
+        episode = (load_policy_episode if flow_only else load_joint_episode)(data_root / row["path"])
         arrays, scalars = {}, {}
         for key, value in episode.items():
             if isinstance(value, np.ndarray):
@@ -132,12 +132,10 @@ def main():
     dist.barrier()
     config = torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
     source = torch.load(args.weights, map_location="cpu", weights_only=False, mmap=True)
-    if source.get("input_channels") != 5 or "model" in source:
-        raise ValueError("expected an exported TCOW-only RGB-D checkpoint")
     seeker_args = dict(config["seeker_args"])
     seeker_args["tracker_pretrained"] = False
     tcow = expand_depth_channel(Seeker(logging.getLogger("tcow"), **seeker_args))
-    tcow.load_state_dict(source["net_seeker"], strict=True)
+    source_step = load_training_tracker(tcow, source, args.flow_only)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
     flow = DenseFlowMatching()
@@ -145,7 +143,13 @@ def main():
     statistics = [policy_statistics(args.data, [r for rows in clusters for r in rows])
                   if rank == 0 else None]
     dist.broadcast_object_list(statistics, src=0)
+    flow.relative_actions = statistics[0].get("action_representation") == "relative_joint"
     flow.set_statistics(statistics[0])
+    if "model" in source:
+        flow.visual.load_state_dict({k.removeprefix("flow.visual."): v for k, v in source["model"].items()
+                                     if k.startswith("flow.visual.")}, strict=True)
+        imported["visual_initialization"] = str(args.weights)
+    imported["action_representation"] = "relative_joint" if flow.relative_actions else "absolute_joint"
     if rank == 0:
         (args.output / "flow_initialization.json").write_text(
             json.dumps({"import": imported, "normalization": statistics[0]}, indent=2) + "\n")
@@ -179,7 +183,7 @@ def main():
                           "samples_per_epoch": total_samples, "mask_only_per_epoch": total_samples - total_action,
                           "action_chunks_per_epoch": total_action, "batch_size": args.batch_size,
                           "rank_batch_sizes": args.rank_batch_sizes, "world_size": world,
-                          "device_name": torch.cuda.get_device_name(), "source_tcow_step": source["source_step"],
+                          "device_name": torch.cuda.get_device_name(), "source_tcow_step": source_step,
                           "trainable_tcow": sum(p.numel() for p in model.tcow.parameters() if p.requires_grad),
                           "trainable_flow": sum(p.numel() for p in model.flow.parameters()),
                           "fresh_flow": False, "flow_type": model.flow.flow_type}), flush=True)
@@ -192,7 +196,7 @@ def main():
     if rank == 0:
         shared_root.mkdir(mode=0o700)
     with ThreadPoolExecutor(max_workers=1) as loader:
-        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0")
+        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only)
                   if rank == 0 else None)
         with tqdm(total=args.smoke_steps or total_steps, desc="train TCOW + flow (DDP)",
                   unit="step", mininterval=5, file=sys.stdout, disable=rank != 0) as progress:
@@ -207,7 +211,7 @@ def main():
                 wait_s += time.perf_counter() - waiting
                 future = (loader.submit(cache_cluster, args.data,
                                         clusters[(cluster_index + 1) % len(clusters)],
-                                        shared_root / str(cluster_index + 1))
+                                        shared_root / str(cluster_index + 1), args.flow_only)
                           if rank == 0 and not args.smoke_steps and
                           cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(i, end, action) for i, plan in enumerate(plans[cluster_id]) for end, action in plan]
@@ -226,7 +230,8 @@ def main():
                 rng.shuffle(batches)
                 if args.smoke_steps:
                     # Exercise both branches, including a partial tail batch with an empty rank.
-                    batches = [phases[0][0], phases[1][0], phases[0][-1], phases[1][-1]]
+                    batches = ([phases[1][0], phases[1][1], phases[1][-1], phases[1][-1]] if args.flow_only else
+                               [phases[0][0], phases[1][0], phases[0][-1], phases[1][-1]])
                 for batch in batches:
                     batch_items, count = rank_batch(batch, args.rank_batch_sizes, rank)
                     samples = [training_clip(episodes[i][1], end, action, "cuda")
@@ -258,6 +263,9 @@ def main():
                         patch = model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.grad
                         head = model.tcow.seeker.tracker_post_linear.weight.grad
                         out = model.flow.output.weight.grad
+                        if args.flow_only and (patch is not None or head is not None or out is None or
+                                               not torch.isfinite(out).all() or not out.abs().sum()):
+                            raise AssertionError("invalid frozen TCOW / trainable FM gradients")
                         if not is_action and out is not None:
                             raise AssertionError("mask-only batch created FM gradients")
                         values = [float(p.float().abs().sum()) if p is not None else None
@@ -297,7 +305,8 @@ def main():
                         if rank == 0:
                             report = {"event": "smoke_complete", "steps": step, "world_size": world,
                                       "rank_batch_sizes": args.rank_batch_sizes, "synchronized": True,
-                                      "both_loss_phases": checked_phases == {False, True},
+                                      "expected_loss_phases_passed": checked_phases == ({True} if args.flow_only else {False, True}),
+                                      "frozen_tcow": args.flow_only,
                                       "per_rank_peak_vram_cpu_rss_gib": [m.tolist() for m in memories]}
                             (args.output / "smoke.json").write_text(json.dumps(report, indent=2) + "\n")
                             print(json.dumps(report), flush=True)

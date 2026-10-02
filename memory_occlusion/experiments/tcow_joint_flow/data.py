@@ -31,6 +31,11 @@ def split_rows(root):
 
 def policy_statistics(root, rows):
     """Mean/std on valid TRAIN action frames, without decoding RGB or depth."""
+    if (root / "normalization.json").is_file():
+        statistics = json.loads((root / "normalization.json").read_text())
+        if statistics["action_representation"] != "relative_joint" or any(r["split"] != "train" for r in rows):
+            raise ValueError("relative normalization must use train data")
+        return statistics
     total = 0
     sums = {name: np.zeros(6, np.float64) for name in ("state", "action")}
     squares = {name: np.zeros(6, np.float64) for name in sums}
@@ -124,8 +129,18 @@ def load_policy_episode(path: Path):
               int(meta["decision_frames"]["t_obj"]))
     if len(valid_ends) == 0 or not np.isin(events[0], valid_ends):
         raise ValueError(f"no valid 25-action chunk at policy start: {path}")
-    return dict(rgb=rgb, depth=depth, proprio=proprio, action=action, action_valid=valid,
-                query=query, valid_ends=valid_ends, events=events, name=path.name)
+    episode = dict(rgb=rgb, depth=depth, proprio=proprio, action=action, action_valid=valid,
+                   query=query, valid_ends=valid_ends, events=events, name=path.name)
+    if (path / "relative_actions.npz").is_file():
+        with np.load(path / "relative_actions.npz") as z:
+            episode.update(relative_action=z["action"], relative_starts=z["starts"],
+                           relative_valid=z["valid"], relative_anchor=z["anchor"],
+                           action_representation="relative_joint")
+        expected = np.array([end for end, active in training_samples(episode) if active])
+        if not np.array_equal(expected, episode["relative_starts"]):
+            raise ValueError(f"relative chunk starts differ: {path}")
+        np.testing.assert_array_equal(episode["relative_anchor"], proprio[expected])
+    return episode
 
 
 def policy_clip(episode, end: int, device: str):
@@ -155,7 +170,8 @@ def load_joint_episode(path: Path):
 def joint_clip(episode, end: int, device: str):
     rgbd, query, proprio, action = policy_clip(episode, end, device)
     indices = np.rint(np.linspace(0, end, 30)).astype(np.int64)
-    masks = torch.from_numpy(episode["mask"][indices].copy()).permute(1, 0, 2, 3)[None]
+    masks = (torch.from_numpy(episode["mask"][indices].copy()).permute(1, 0, 2, 3)[None]
+             if "mask" in episode else torch.zeros((1, 3, 30, 1, 1)))
     action_frames = torch.from_numpy((indices >= episode["events"][0]).copy())[None]
     return rgbd, query, masks.float().to(device), proprio, action, action_frames.to(device)
 
@@ -199,4 +215,10 @@ def training_clip(episode, end: int, has_action: bool, device: str):
     if has_action and not valid_steps.all():
         last = action[:, int(valid_steps.sum()) - 1:int(valid_steps.sum())]
         action = torch.where(valid_steps[:, :, None], action, last)
+    if has_action and episode.get("action_representation") == "relative_joint":
+        index = int(np.searchsorted(episode["relative_starts"], end))
+        if index >= len(episode["relative_starts"]) or episode["relative_starts"][index] != end:
+            raise ValueError(f"missing relative chunk: {episode['name']}, {end}")
+        np.testing.assert_array_equal(episode["relative_valid"][index], valid_steps[0].cpu().numpy())
+        action = torch.from_numpy(episode["relative_action"][index].copy())[None].to(device)
     return rgbd, query, masks, proprio, action, valid_steps

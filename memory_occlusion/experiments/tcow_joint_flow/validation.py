@@ -44,6 +44,9 @@ def evaluate(model, root, rows, device, distributed=False):
         for end in tqdm(ends, desc=f"validate {path.name}", unit="chunk", leave=False,
                         mininterval=5, file=sys.stdout, disable=rank != 0):
             rgbd, query, truth, proprio, action, valid = training_clip(episode, end, True, device)
+            if episode.get("action_representation") == "relative_joint":
+                action = action.clone()
+                action[:, :, :5] += proprio[:, None, :5]
             generator_device = "cpu" if device == "mps" else device
             generator = torch.Generator(device=generator_device).manual_seed(int(row["seed"]) + end)
             noise = model.flow.sample_noise(1, generator_device, generator).to(device)

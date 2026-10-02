@@ -125,3 +125,31 @@ This synthetic test checks connectivity, not task performance.
 `rollout.py`, `benchmark.py` and the diagnostics restore the architecture and
 normalization from the joint checkpoint. The previous dense decoder remains
 available solely to restore checkpoints needed for comparison.
+
+## Relative-joint experiment
+
+`memory_occlusion.dataset.prepare_relative_actions` accepts `--source` and a
+fresh `--output` dataset directory. It writes each stride-ten H25 chunk as
+`expert_command[t:t+25,:5] - observed_proprio[t,:5]`, keeps gripper absolute,
+and fits action mean/std on valid TRAIN chunk entries only. State statistics
+use valid TRAIN frames. Each episode has its own `relative_actions.npz`; RGB-D,
+absolute source labels and metadata are linked read-only to the source. The
+new dataset depends on that retained source. Train/val/test manifests are
+preserved. `normalization.json` and `dataset.json` record the new convention.
+
+`memory_occlusion.dataset.replay_relative_actions --data DATA --output OUTPUT`
+decodes standardized labels and executes ten actions per chunk, fixing the
+live observed anchor for the entire chunk. It selects ten distinct train
+scenes spanning targets and one/two/three swaps, writes 25 Hz videos and
+traces, and exits with an error unless all ten complete cover removal,
+target grasp and placement. This gate uses the full expert action duration.
+
+Pass the new dataset to either trainer with `--flow-only --epochs 1`. A joint
+checkpoint may be supplied as `--weights` in this frozen mode: only TCOW and
+the visual adapter initialize from it; the action expert initializes from
+`--flow-weights`. TCOW including its mask head has no trainable parameters or
+mask loss. Frozen training skips loading dense mask labels. Relative targets
+come from the stored chunks; flow inference returns absolute commands by
+adding back the observed chunk anchor after undoing mean/std. Checkpoint
+`action_representation` restores this decoder, including in closed loop.
+Validation converts labels back to absolute joint units for comparison.

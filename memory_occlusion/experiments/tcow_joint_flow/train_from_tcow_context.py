@@ -15,9 +15,9 @@ import torch
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.data import (
-    load_joint_episode, policy_statistics, training_clip, training_samples,
+    load_joint_episode, load_policy_episode, policy_statistics, training_clip, training_samples,
 )
-from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel
+from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel, load_training_tracker
 from memory_occlusion.experiments.tcow_joint_flow.data import split_rows
 from memory_occlusion.experiments.tcow_joint_flow.tcow import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
@@ -25,8 +25,8 @@ from memory_occlusion.experiments.tcow_joint_flow.tcow import (
 from memory_occlusion.experiments.tcow_joint_flow.validation import evaluate, evaluate_closed_loop
 
 
-def load_cluster(root, rows):
-    return [(row, load_joint_episode(root / row["path"]))
+def load_cluster(root, rows, flow_only=False):
+    return [(row, (load_policy_episode if flow_only else load_joint_episode)(root / row["path"]))
             for row in tqdm(rows, desc="load episodes", unit="episode", mininterval=5,
                             file=sys.stdout)]
 
@@ -35,6 +35,7 @@ def save_checkpoint(path, model, step, args, metrics):
     payload = {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
                "step": step, "architecture": "TCOW RGB-D + dense 301-token context, flow 25x6",
                "flow_type": model.flow.flow_type,
+               "action_representation": "relative_joint" if model.flow.relative_actions else "absolute_joint",
                "source_flow_checkpoint": str(args.flow_weights) if args.flow_weights else None,
                "source_checkpoint": str(args.weights), "metrics": metrics,
                "mask_loss_weight": args.mask_loss_weight}
@@ -116,19 +117,23 @@ def main():
     config = (torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
               if args.config_checkpoint else None)
     pretrained = torch.load(args.weights, map_location="cpu", weights_only=False, mmap=True)
-    if pretrained.get("input_channels") != 5 or "model" in pretrained:
-        raise ValueError("expected an exported TCOW-only RGB-D checkpoint")
     seeker_args = dict(config["seeker_args"] if config else pretrained["seeker_args"])
     seeker_args["tracker_pretrained"] = False
     tcow = expand_depth_channel(Seeker(logging.getLogger("tcow"), **seeker_args))
-    tcow.load_state_dict(pretrained["net_seeker"], strict=True)
+    source_step = load_training_tracker(tcow, pretrained, args.flow_only)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
     from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
     flow = DenseFlowMatching()
     imported = flow.load_pretrained(args.flow_weights)
     statistics = policy_statistics(args.data, [row for rows in clusters for row in rows])
+    flow.relative_actions = statistics.get("action_representation") == "relative_joint"
     flow.set_statistics(statistics)
+    if "model" in pretrained:
+        flow.visual.load_state_dict({k.removeprefix("flow.visual."): v for k, v in pretrained["model"].items()
+                                     if k.startswith("flow.visual.")}, strict=True)
+        imported["visual_initialization"] = str(args.weights)
+    imported["action_representation"] = "relative_joint" if flow.relative_actions else "absolute_joint"
     (args.output / "flow_initialization.json").write_text(
         json.dumps({"import": imported, "normalization": statistics}, indent=2) + "\n")
     print(json.dumps({"event": "pretrained_flow", **imported}), flush=True)
@@ -166,7 +171,7 @@ def main():
                       "batch_size": args.batch_size, "device": device,
                       "device_name": torch.cuda.get_device_name(0) if device == "cuda" else "Apple MPS",
                       "flow_only": args.flow_only,
-                      "source_tcow_step": pretrained["source_step"],
+                      "source_tcow_step": source_step,
                       "fresh_flow": False,
                       "flow_type": model.flow.flow_type}), flush=True)
     step = 0
@@ -176,7 +181,7 @@ def main():
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     with ThreadPoolExecutor(max_workers=1) as loader:
-        future = loader.submit(load_cluster, args.data, clusters[0])
+        future = loader.submit(load_cluster, args.data, clusters[0], args.flow_only)
         with tqdm(total=total_steps, desc="train TCOW + flow", unit="step", mininterval=5,
                   file=sys.stdout) as progress:
             for cluster_index in range(len(clusters) * args.epochs):
@@ -185,7 +190,7 @@ def main():
                 episodes = future.result()
                 wait_s += time.perf_counter() - waiting
                 next_id = (cluster_index + 1) % len(clusters)
-                future = (loader.submit(load_cluster, args.data, clusters[next_id])
+                future = (loader.submit(load_cluster, args.data, clusters[next_id], args.flow_only)
                           if cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(episode_id, end, has_action)
                          for episode_id, plan in enumerate(plans[cluster_id])

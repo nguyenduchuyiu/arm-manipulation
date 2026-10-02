@@ -94,7 +94,7 @@ def restore_joint_model(seeker, checkpoint):
     flow_type = checkpoint.get("flow_type", "dense")
     if flow_type == "dense_action_expert":
         from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
-        flow = DenseFlowMatching()
+        flow = DenseFlowMatching(relative_actions=checkpoint.get("action_representation") == "relative_joint")
     elif flow_type == "dense":
         flow = FlowPolicy()
     else:
@@ -102,6 +102,21 @@ def restore_joint_model(seeker, checkpoint):
     model = JointTCOWFlow(seeker, flow)
     model.load_state_dict(checkpoint["model"], strict=True)
     return model
+
+
+def load_training_tracker(seeker, source, flow_only):
+    if "model" in source:
+        if not flow_only:
+            raise ValueError("joint initialization requires frozen TCOW")
+        state = {key.removeprefix("tcow."): value for key, value in source["model"].items()
+                 if key.startswith("tcow.")}
+        step = source["step"]
+    else:
+        if source.get("input_channels") != 5:
+            raise ValueError("expected an RGB-D TCOW checkpoint")
+        state, step = source["net_seeker"], source["source_step"]
+    seeker.load_state_dict(state, strict=True)
+    return step
 
 
 def expand_depth_channel(seeker: nn.Module):

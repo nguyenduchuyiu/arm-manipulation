@@ -124,8 +124,9 @@ class DenseFlowMatching(nn.Module):
     horizon = 25
     noise_dim = 32
 
-    def __init__(self):
+    def __init__(self, relative_actions=False):
         super().__init__()
+        self.relative_actions = relative_actions
         self.visual = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
                                     nn.SiLU(), nn.Linear(256, 960))
         self.proprio = nn.Sequential(nn.Linear(6, 128), nn.SiLU(), nn.Linear(128, 256),
@@ -226,4 +227,8 @@ class DenseFlowMatching(nn.Module):
         for index in range(steps):
             time = torch.full((len(noise),), index / steps, device=noise.device)
             estimate = estimate + self.velocity(estimate, time, kv).float() / steps
-        return estimate[:, :, :6] * self.action_std + self.action_mean
+        action = estimate[:, :, :6] * self.action_std + self.action_mean
+        if self.relative_actions:
+            action = action.clone()
+            action[:, :, :5] += proprio[:, None, :5]
+        return action
