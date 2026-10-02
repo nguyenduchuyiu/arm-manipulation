@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 from controllers.oracle_pick import pick
 from memory_occlusion.task import normalized
 from memory_occlusion.environment.env import (COVER_XY, COVER_DROP_ZONE_XY,
-                                  TARGET_DROP_ZONE_XY, TARGETS, MemoryOcclusionEnv)
+                                  TARGET_DROP_ZONE_XY, TARGETS, MemoryOcclusionEnv, wrist_camera_metadata)
 
 FPS = 25
 
@@ -152,6 +152,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
     height = 240 if tcow_labels else 320
     depth, masks, entities, proprio, actions, valid, phases, poses, times = [], [], [], [], [], [], [], [], []
     tcow_masks = []
+    qpos_frames = []
     limits = env.model.actuator_ctrlrange.copy()
     decision = {}
     grasp = {}
@@ -173,6 +174,8 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
 
     def record(phase, action_valid=True):
         nonlocal semantic_entity
+        # All saved poses and both camera views refer to the same current state.
+        mujoco.mj_forward(env.model, env.data)
         rgb_full, depth_full = env._overview()
         seg_full = env.segmentation()
         target_visible_full = seg_full[:, :, 0] == target_geom
@@ -248,6 +251,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         times.append(float(env.data.time))
         poses.append(np.concatenate([env.data.qpos[a:a + 7] for a in
                                      [*env.target_qadr.values(), *env.cover_qadr.values()]]))
+        qpos_frames.append(env.data.qpos.copy())
         if phase == "reveal" and len(depth) == 1:
             Image.fromarray(rgb).save(directory / "reveal.png")
         if phase == "done":
@@ -313,7 +317,8 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                 directory / "query_mask.png")
         body_order = [*env.target_qadr, *env.cover_qadr]
         np.savez_compressed(directory / "debug_poses.npz", poses=np.stack(poses),
-                            body_names=np.array(body_order), timestamp_s=np.array(times))
+                            body_names=np.array(body_order), timestamp_s=np.array(times),
+                            qpos=np.stack(qpos_frames))
         phase_intervals = []
         start = 0
         for end in range(1, len(phases) + 1):
@@ -333,12 +338,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                                         "quaternion": env.model.camera("overview").quat.tolist(),
                                         "fovy": float(env.model.camera("overview").fovy[0]),
                                         "crop_top": top},
-                    "wrist_camera": {"video": "wrist_rgb.mp4", "resolution": [320, 320],
-                                     "body": env.model.body(int(env.model.camera("wrist").bodyid[0])).name,
-                                     "position": env.model.camera("wrist").pos.tolist(),
-                                     "quaternion": env.model.camera("wrist").quat.tolist(),
-                                     "fovy": float(env.model.camera("wrist").fovy[0]),
-                                     "fps": FPS, "frames": len(depth)},
+                    "wrist_camera": wrist_camera_metadata(env.model, len(depth)),
                     "tcow_labels": "tcow_labels.npz" if tcow_labels else None,
                     "decision_frames": decision,
                     "decision_times_s": {k: v / FPS for k, v in decision.items()},

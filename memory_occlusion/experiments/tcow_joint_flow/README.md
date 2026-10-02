@@ -29,10 +29,40 @@ append the wrist view beside RGB and the three predicted masks.
 
 Dataset generation now saves synchronized, uncropped `wrist_rgb.mp4` at
 25 Hz plus camera metadata. Old overview-only data cannot train a wrist
-policy; collect a fresh dataset before enabling this flag. Both trainers and
+policy; backfill wrist views or collect a fresh dataset before training. Both trainers and
 validation require exact wrist/overview frame alignment and reject missing
 wrist data before creating a run. Relative-joint conversion links this extra video as well.
 Use `--no-wrist-camera` only to reproduce the previous overview-only experiment.
+
+### Backfill existing episodes
+
+`backfill_wrist` restores each frame from recorded observed joint positions
+and object/cover poses, then runs only forward kinematics and rendering. It
+preserves the split, absolute/relative action chunks, masks and normalization.
+Original large files are linked read-only; only wrist videos and metadata are
+new. It does not rerun the expert, dynamics, IK, depth or mask generation.
+
+Old records omitted the left jaw/pinion, so their poses are reconstructed from
+the geometric joint constraints. Clipped/float32 proprio and old post-step
+render states may also introduce small differences. Each episode is gated on
+reconstructed overview RGB and visible-mask agreement at reveal, decisions,
+approach, closure, grasp, release and final frames. These checks bound visible
+alignment; they do not establish bit-identical wrist images. New collection
+saves full `qpos` and renders after `mj_forward` to avoid this approximation.
+
+```bash
+.venv/bin/python -m memory_occlusion.dataset.backfill_wrist \
+  --source /path/to/memory_occlusion_relative_joint_25hz_h25_k10_v1 \
+  --output /path/to/memory_occlusion_multiview_relative_joint_25hz_v1 \
+  --workers 4
+```
+
+For the gate, use `--max-episodes 1` with a separate smoke output. Add `--resume`
+only when resuming the same source/output configuration after interruption.
+Per-frame/per-episode tqdm progress and reconstruction metrics appear on stdout.
+Run long server commands through `tee` in `huy` tmux. `wrist_backfill.json` per
+episode and `backfill_summary.json` record checks and timings. Existing raw
+data remain unchanged. A missing saved pose or failed gate stops the job.
 Checkpoints store `wrist_camera` and `context_tokens`; restoration constructs
 the recorded architecture and loads strictly. Existing comparison
 checkpoints still restore with 301 tokens.

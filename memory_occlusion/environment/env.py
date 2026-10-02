@@ -49,6 +49,14 @@ def configure_mvp_model(model: mujoco.MjModel) -> None:
     mujoco.mju_mat2Quat(camera.quat, np.column_stack((right, up, -forward)).flatten())
 
 
+def wrist_camera_metadata(model, frames):
+    camera = model.camera("wrist")
+    return {"video": "wrist_rgb.mp4", "resolution": [320, 320],
+            "body": model.body(int(camera.bodyid[0])).name,
+            "position": camera.pos.tolist(), "quaternion": camera.quat.tolist(),
+            "fovy": float(camera.fovy[0]), "fps": 25, "frames": frames}
+
+
 class MemoryOcclusionEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 25}
 
