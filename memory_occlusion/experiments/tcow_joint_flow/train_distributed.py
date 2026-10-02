@@ -1,12 +1,14 @@
 """Train the same joint policy with torchrun on up to three GPUs."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+import faulthandler
 import json
 import logging
 import os
 from pathlib import Path
 import resource
 import shutil
+import signal
 import sys
 import time
 
@@ -80,11 +82,12 @@ def release_cluster(episodes, destination, rank):
 
 
 def main():
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     parser = argument_parser()
     parser.description = __doc__
     parser.add_argument("--rank-batch-sizes", type=int, nargs="+", required=True)
-    parser.add_argument("--smoke-steps", type=int, choices=(0, 4), default=0,
-                        help="alternate mask/action batches, verify synchronization, then exit")
+    parser.add_argument("--smoke-steps", type=int, choices=(0, 4, 8), default=0,
+                        help="verify gradients and synchronization; eight steps cross a cluster boundary")
     args = parser.parse_args()
     if args.closed_loop_every_evals < 0:
         raise ValueError("closed-loop-every-evals must be nonnegative")
@@ -117,6 +120,8 @@ def main():
                 for i in range(0, len(train_rows), args.cluster_size)]
     if args.max_clusters:
         clusters = clusters[:args.max_clusters]
+    if args.smoke_steps > len(clusters) * args.epochs * 4:
+        raise ValueError("eight-step smoke requires at least two clusters")
     if rank == 0:
         if args.output.exists():
             raise FileExistsError(args.output)
@@ -159,7 +164,7 @@ def main():
         model.tcow.requires_grad_(False)
     # FM is unused on mask-only batches; the used parameter set changes each step.
     engine = DistributedDataParallel(model, device_ids=[local_rank],
-                                     find_unused_parameters=True, broadcast_buffers=False,
+                                     find_unused_parameters=not args.flow_only, broadcast_buffers=False,
                                      gradient_as_bucket_view=True)
     torch.manual_seed(args.seed + rank)
     losses = MyLosses(config["train_args"], logging.getLogger("tcow"), "train")
@@ -212,7 +217,8 @@ def main():
                 future = (loader.submit(cache_cluster, args.data,
                                         clusters[(cluster_index + 1) % len(clusters)],
                                         shared_root / str(cluster_index + 1), args.flow_only)
-                          if rank == 0 and not args.smoke_steps and
+                          if rank == 0 and
+                          (not args.smoke_steps or (cluster_index + 1) * 4 < args.smoke_steps) and
                           cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(i, end, action) for i, plan in enumerate(plans[cluster_id]) for end, action in plan]
                 for i, (_row, episode) in enumerate(episodes):
