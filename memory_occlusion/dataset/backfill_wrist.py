@@ -139,6 +139,10 @@ def render_episode(source, output, row):
             (destination / name).symlink_to((path / name).resolve())
     if (path / "relative_actions.npz").is_file() and not (destination / "relative_actions.npz").is_symlink():
         (destination / "relative_actions.npz").symlink_to((path / "relative_actions.npz").resolve())
+    original_directory = (path / "rgb.mp4").resolve().parent
+    for snapshot in original_directory.glob("*.png"):
+        if not (destination / snapshot.name).is_symlink():
+            (destination / snapshot.name).symlink_to(snapshot)
     gates = []
     temporary = destination / "wrist_rgb.partial.mp4"
     mujoco.mj_resetData(MODEL, DATA)
