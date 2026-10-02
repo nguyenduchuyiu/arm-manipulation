@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 import imageio.v3 as iio
 import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
+from tqdm.auto import tqdm
 
 from controllers.oracle_pick import pick
 from memory_occlusion.task import normalized
@@ -171,6 +173,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
     wrist_writer = video_writer("wrist_rgb.mp4")
     mask_writer = video_writer("mask_preview.mp4") if previews else None
     depth_writer = video_writer("depth_preview.mp4") if previews else None
+    progress = tqdm(desc=f"collect {directory.name}", unit="frame", mininterval=5, file=sys.stdout)
 
     def record(phase, action_valid=True):
         nonlocal semantic_entity
@@ -260,6 +263,8 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                                              for key, value in grasp.items()}}.items():
             if len(depth) - 1 == index:
                 Image.fromarray(rgb).save(directory / f"{name}.png")
+        progress.set_postfix(phase=phase, refresh=False)
+        progress.update(1)
 
     def securely_lifted(body_name, start_z):
         body_id = env.model.body(body_name).id
@@ -369,6 +374,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         }, indent=2) + "\n")
         return metadata
     finally:
+        progress.close()
         rgb_writer.close()
         wrist_writer.close()
         if previews:
