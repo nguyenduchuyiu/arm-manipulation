@@ -183,8 +183,11 @@ def error_summary(prediction, truth):
 
 def fit(args, cache):
     records = cache["records"]
-    train = [i for i, r in enumerate(records) if r["split"] == "train" and r["phase"] == "context"]
-    val = [i for i, r in enumerate(records) if r["split"] == "val" and r["phase"] == "context"]
+    train_context = [i for i, r in enumerate(records) if r["split"] == "train" and r["phase"] == "context"]
+    train = [i for i, r in enumerate(records) if r["split"] == "train" and
+             (args.train_phases == "all" or r["phase"] == "context")]
+    val = [i for i, r in enumerate(records) if r["split"] == "val" and
+           (args.train_phases == "all" or r["phase"] == "context")]
     features = cache["features"].to(args.device)
     labels = cache["labels"].to(args.device)
     center = labels[train].mean(dim=0)
@@ -223,8 +226,8 @@ def fit(args, cache):
     with torch.inference_mode():
         prediction = torch.cat([model(part) for part in features.split(64)]) * .1 + center
     prediction, truth = prediction.cpu().numpy(), labels.cpu().numpy()
-    train_sides = np.array([records[i]["side"] for i in train])
-    means = np.stack([truth[np.array(train)[train_sides == side]].mean(axis=0) for side in (0, 1)])
+    train_sides = np.array([records[i]["side"] for i in train_context])
+    means = np.stack([truth[np.array(train_context)[train_sides == side]].mean(axis=0) for side in (0, 1)])
     groups = {}
     for group, split in (("standard", "train"), ("standard", "val"),
                          ("standard", "test"), ("composition", "test")):
@@ -244,9 +247,12 @@ def fit(args, cache):
     (args.output / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
     summary = {"source_step": cache["source_step"], "train_samples": len(train), "val_samples": len(val),
                "probe_parameters": sum(p.numel() for p in model.parameters()), "best_val_mean_mm": best,
+               "train_phases": args.train_phases,
                "context_proprio_range": cache["context_proprio_range"], "groups": groups,
                "label": "world cover pose applied to local grasp marker [0,0,0.130] m",
-               "protocol": "Train only context frames; choose by scene-disjoint validation. Close-frame results test transfer to expert arm/contact observations.",
+               "protocol": ("Train only context frames; choose by scene-disjoint validation. Close-frame results test transfer to expert arm/contact observations."
+                            if args.train_phases == "context" else
+                            "Train context and close frames; choose by scene-disjoint validation. Test scenes remain unseen in all phases."),
                "baseline": "Train-context mean point conditioned on oracle GT left/right side; no test labels used to fit means."}
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps({"event": "complete", **summary}), flush=True)
@@ -260,6 +266,7 @@ def main():
     parser.add_argument("--cache", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=400)
+    parser.add_argument("--train-phases", choices=("context", "all"), default="context")
     parser.add_argument("--device", choices=("cuda", "mps", "cpu"), default="cuda")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
