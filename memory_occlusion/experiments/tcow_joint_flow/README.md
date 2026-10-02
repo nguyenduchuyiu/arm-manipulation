@@ -2,8 +2,9 @@
 
 TCOW processes RGB-D history and the visible target mask on the first frame.
 Its final frame supplies 300 spatial tokens of width 768. A learned visual
-adapter maps them through width 256 to 960. Proprio supplies one state token,
-giving 301 dense context tokens. No predicted mask enters the policy.
+adapter maps them through width 256 to 960. Proprio supplies one state token.
+The current policy also adds wrist tokens below; previous overview-only
+checkpoints used 301 dense context tokens. No predicted mask enters the policy.
 
 New training enables `--wrist-camera` by default. FM also reads the **current**, full 320x320 wrist RGB
 image. A separate ViT encoder copies TCOW's RGB patch convolution, spatial
@@ -42,11 +43,11 @@ projections, state projection and eight context K/V projections from
 Pairs of pretrained layers form eight blocks:
 
 ```text
-action self-attention -> MLP -> cross-attention to all 301 tokens -> MLP
+action self-attention -> MLP -> cross-attention to all context tokens -> MLP
 ```
 
 The expert width is 720. Action self-attention is bidirectional, matching this
-experiment's dense interaction. The context is projected directly from TCOW;
+experiment's dense interaction. The context is projected directly from TCOW/wrist/proprio;
 SmolVLM's evolving prefix hidden states are replaced. These changes require
 fine-tuning even though all action expert weights are imported.
 
