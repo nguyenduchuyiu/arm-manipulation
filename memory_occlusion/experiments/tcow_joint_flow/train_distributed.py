@@ -290,6 +290,10 @@ def main():
                     progress.update()
                     progress.set_postfix(action=f"{logs[0].item():.3f}", mask=f"{logs[1].item():.3f}",
                                          chunks=len(batch) if is_action else 0, refresh=False)
+                    # Release RGB-D clips and full-video masks before allocating the next batch.
+                    del samples, rgbd, query, truth, proprio, action, valid
+                    del noisy, tau, target, logits, velocity, latent, context
+                    del action_loss, mask_loss, total
                     if args.smoke_steps and step >= args.smoke_steps:
                         # Compare an updated action projection and TCOW patch checksum across ranks.
                         signature = torch.stack((model.flow.output.weight.detach().double().sum(),
