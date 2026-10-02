@@ -12,9 +12,10 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from memory_occlusion.experiments.tcow_joint_flow.data import clip, load_episode
+from memory_occlusion.experiments.tcow_joint_flow.data import clip, load_joint_episode
 from memory_occlusion.experiments.tcow_joint_flow.model import expand_depth_channel, restore_joint_model
 from memory_occlusion.experiments.tcow_joint_flow.tcow import Seeker
+from memory_occlusion.experiments.tcow_joint_flow.wrist import wrist_tensor
 
 
 def iou(prediction, truth):
@@ -24,7 +25,8 @@ def iou(prediction, truth):
 
 
 def evaluate_episode(model, path, row):
-    episode = load_episode(path)
+    use_wrist = getattr(model.flow, "wrist_enabled", False)
+    episode = load_joint_episode(path, require_wrist=use_wrist)
     meta = json.loads((path / "episode.json").read_text())
     decision = int(meta["decision_frames"]["t_occ"]) - 1
     recovery = min(int(meta["semantic_transition_frames"]["cover_released"]) + 25,
@@ -46,7 +48,11 @@ def evaluate_episode(model, path, row):
         generator = torch.Generator(device="cuda").manual_seed(
             int(row["seed"]) * 100 + sum(map(ord, row["target"])))
         noise = model.flow.sample_noise(len(actions), "cuda", generator)
-        estimate = model.flow.sample(latent[2:], states, noise)
+        if use_wrist:
+            wrist = torch.cat([wrist_tensor(episode["wrist_rgb"][end], "cuda") for end in action_ends])
+            estimate = model.flow.sample(latent[2:], states, noise, wrist=wrist)
+        else:
+            estimate = model.flow.sample(latent[2:], states, noise)
     gt_action = actions.float()
     predicted_action = estimate.float()
     hold = states.float()[:, None, :].expand_as(gt_action)

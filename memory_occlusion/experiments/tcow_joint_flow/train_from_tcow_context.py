@@ -15,7 +15,7 @@ import torch
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.data import (
-    load_joint_episode, load_policy_episode, policy_statistics, training_clip, training_samples,
+    load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, training_clip, training_samples,
 )
 from memory_occlusion.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel, load_training_tracker
 from memory_occlusion.experiments.tcow_joint_flow.data import split_rows
@@ -25,15 +25,20 @@ from memory_occlusion.experiments.tcow_joint_flow.tcow import (
 from memory_occlusion.experiments.tcow_joint_flow.validation import evaluate, evaluate_closed_loop
 
 
-def load_cluster(root, rows, flow_only=False):
-    return [(row, (load_policy_episode if flow_only else load_joint_episode)(root / row["path"]))
+def load_cluster(root, rows, flow_only=False, require_wrist=False):
+    return [(row, (load_policy_episode if flow_only else load_joint_episode)(
+        root / row["path"], require_wrist=require_wrist))
             for row in tqdm(rows, desc="load episodes", unit="episode", mininterval=5,
                             file=sys.stdout)]
 
 
 def save_checkpoint(path, model, step, args, metrics):
     payload = {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()},
-               "step": step, "architecture": "TCOW RGB-D + dense 301-token context, flow 25x6",
+               "step": step,
+               "architecture": "TCOW RGB-D + wrist RGB + proprio, dense 701-token context, flow 25x6"
+                               if model.flow.wrist_enabled else "TCOW RGB-D + dense 301-token context, flow 25x6",
+               "wrist_camera": model.flow.wrist_enabled,
+               "context_tokens": 701 if model.flow.wrist_enabled else 301,
                "flow_type": model.flow.flow_type,
                "action_representation": "relative_joint" if model.flow.relative_actions else "absolute_joint",
                "source_flow_checkpoint": str(args.flow_weights) if args.flow_weights else None,
@@ -68,6 +73,8 @@ def argument_parser():
     p.add_argument("--device", choices=("cuda", "mps"), default="cuda")
     p.add_argument("--flow-only", action="store_true",
                    help="freeze TCOW and optimize only the action flow")
+    p.add_argument("--wrist-camera", action=argparse.BooleanOptionalAction, default=True,
+                   help="default: use current wrist RGB; --no-wrist-camera reproduces overview-only training")
     p.add_argument("--seed", type=int, default=0)
     return p
 
@@ -95,6 +102,8 @@ def main():
         raise ValueError("cluster size, epochs, and batch size must be positive")
     train_rows, val_rows = split_rows(args.data)
     val_rows = val_rows[:args.max_val_episodes] if args.max_val_episodes else val_rows
+    if args.wrist_camera:
+        require_wrist_data(args.data, train_rows + val_rows)
     rng = np.random.default_rng(args.seed)
     train_rows = [train_rows[i] for i in rng.permutation(len(train_rows))]
     clusters = [train_rows[i:i + args.cluster_size]
@@ -124,7 +133,7 @@ def main():
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
     from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
-    flow = DenseFlowMatching()
+    flow = DenseFlowMatching(wrist_backbone=tcow.seeker.tracker_backbone if args.wrist_camera else None)
     imported = flow.load_pretrained(args.flow_weights)
     statistics = policy_statistics(args.data, [row for rows in clusters for row in rows])
     flow.relative_actions = statistics.get("action_representation") == "relative_joint"
@@ -181,7 +190,7 @@ def main():
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     with ThreadPoolExecutor(max_workers=1) as loader:
-        future = loader.submit(load_cluster, args.data, clusters[0], args.flow_only)
+        future = loader.submit(load_cluster, args.data, clusters[0], args.flow_only, args.wrist_camera)
         with tqdm(total=total_steps, desc="train TCOW + flow", unit="step", mininterval=5,
                   file=sys.stdout) as progress:
             for cluster_index in range(len(clusters) * args.epochs):
@@ -190,7 +199,7 @@ def main():
                 episodes = future.result()
                 wait_s += time.perf_counter() - waiting
                 next_id = (cluster_index + 1) % len(clusters)
-                future = (loader.submit(load_cluster, args.data, clusters[next_id], args.flow_only)
+                future = (loader.submit(load_cluster, args.data, clusters[next_id], args.flow_only, args.wrist_camera)
                           if cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(episode_id, end, has_action)
                          for episode_id, plan in enumerate(plans[cluster_id])
@@ -208,10 +217,13 @@ def main():
                                    for i in range(0, len(phase_items), args.batch_size))
                 rng.shuffle(batches)
                 for batch_items in batches:
-                    samples = [training_clip(episodes[episode_id][1], end, has_action, device)
+                    samples = [training_clip(episodes[episode_id][1], end, has_action, device,
+                                             include_wrist=args.wrist_camera)
                                for episode_id, end, has_action in batch_items]
-                    rgbd, query, truth, proprio, action, valid_steps = (
-                        torch.cat(parts, dim=0) for parts in zip(*samples))
+                    tensors = [torch.cat(parts, dim=0) for parts in zip(*samples)]
+                    rgbd, query, truth, proprio, action, valid_steps = tensors[:6]
+                    wrist = tensors[6] if args.wrist_camera else None
+                    del tensors
                     has_action = valid_steps.any(dim=1)
                     model.train()
                     if args.flow_only:
@@ -222,7 +234,9 @@ def main():
                         latent = model._latent
                         if has_action.any():
                             noisy, tau, target_velocity = model.flow.training_path(action[has_action])
-                            velocity, context = model.flow(latent[has_action], proprio[has_action], noisy, tau)
+                            velocity, context = model.flow(
+                                latent[has_action], proprio[has_action], noisy, tau,
+                                wrist=wrist[has_action] if wrist is not None else None)
                             squared = (velocity.float() - target_velocity).square()
                             weights = valid_steps[has_action, :, None]
                             action_loss = (squared * weights).sum() / (weights.sum() * action.shape[-1])

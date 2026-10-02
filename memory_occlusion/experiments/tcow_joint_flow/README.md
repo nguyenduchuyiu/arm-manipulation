@@ -5,6 +5,37 @@ Its final frame supplies 300 spatial tokens of width 768. A learned visual
 adapter maps them through width 256 to 960. Proprio supplies one state token,
 giving 301 dense context tokens. No predicted mask enters the policy.
 
+New training enables `--wrist-camera` by default. FM also reads the **current**, full 320x320 wrist RGB
+image. A separate ViT encoder copies TCOW's RGB patch convolution, spatial
+attention/MLP weights and positional embeddings at initialization. It keeps
+all 400 spatial tokens (20x20), projects 768 directly to 960, and adds a
+learned wrist view embedding. Its weights are independent of TCOW and train
+with action loss, including when TCOW and its mask head are frozen.
+
+```text
+overview RGB-D history + first-frame query -> original TCOW -> 300 x 768 -> 300 x 960
+current wrist RGB                         -> spatial ViT   -> 400 x 768 -> 400 x 960
+current proprio                           -> state MLP                  ->   1 x 960
+                                                                          |
+                                                    701 dense context tokens -> FM -> 25 x 6
+```
+
+Each of the eight action blocks reads all 701 tokens. The wrist encoder runs
+once per predicted chunk, outside the Euler integration loop. Context-only
+mask minibatches forward TCOW alone; they skip the wrist encoder and FM.
+Closed loop supplies the latest live wrist image at each K10 replan. Videos
+append the wrist view beside RGB and the three predicted masks.
+
+Dataset generation now saves synchronized, uncropped `wrist_rgb.mp4` at
+25 Hz plus camera metadata. Old overview-only data cannot train a wrist
+policy; collect a fresh dataset before enabling this flag. Both trainers and
+validation require exact wrist/overview frame alignment and reject missing
+wrist data before creating a run. Relative-joint conversion links this extra video as well.
+Use `--no-wrist-camera` only to reproduce the previous overview-only experiment.
+Checkpoints store `wrist_camera` and `context_tokens`; restoration constructs
+the recorded architecture and loads strictly. Existing comparison
+checkpoints still restore with 301 tokens.
+
 `flow_matching.py` loads the 16 action layers, gated MLPs, RMSNorms, action/time
 projections, state projection and eight context K/V projections from
 `lerobot/smolvla_base`, revision `d9f33c94a60fb382c90dea2164c96845bd955e28`.
@@ -52,12 +83,12 @@ VLM checkpoint. A failed network transfer can be resumed with `--resume-download
 
 ```bash
 .venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context \
-  --data memory_occlusion/datasets/memory_occlusion_tcow_25hz_240x320_v1 \
+  --data memory_occlusion/datasets/memory_occlusion_multiview_25hz_v1 \
   --weights memory_occlusion/checkpoints/tcow_rgbd_pretrained_joint1200_20260930.pth \
   --config-checkpoint /path/to/tcow_upstream_config_checkpoint.pth \
   --flow-weights memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors \
   --output memory_occlusion/checkpoints/tcow_dense_action_expert \
-  --device mps --batch-size 1 --cluster-size 2 --epochs 1
+  --wrist-camera --device mps --batch-size 1 --cluster-size 2 --epochs 1
 ```
 
 On the server, `train_from_tcow_context_server.sh` supplies the dataset and
@@ -99,6 +130,7 @@ Run the padding/phase and distributed-aggregation regression checks locally:
 
 ```bash
 .venv/bin/python -m unittest memory_occlusion.experiments.tcow_joint_flow.test_validation -v
+.venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.test_wrist -v
 ```
 
 ```bash

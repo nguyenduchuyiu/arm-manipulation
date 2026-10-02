@@ -78,7 +78,7 @@ class JointTCOWFlow(nn.Module):
         dense = output[0]
         self._latent = dense[:, :, -1].flatten(2).transpose(1, 2)
 
-    def forward(self, rgbd, query, proprio=None, noisy_action=None, time=None):
+    def forward(self, rgbd, query, proprio=None, noisy_action=None, time=None, wrist=None):
         self._latent = None
         mask_logits, _flags = self.tcow(rgbd, query)
         if self._latent is None:
@@ -86,7 +86,8 @@ class JointTCOWFlow(nn.Module):
         latent = self._latent
         if noisy_action is None:
             return mask_logits, None, latent, None
-        velocity, context = self.flow(latent, proprio, noisy_action, time)
+        velocity, context = (self.flow(latent, proprio, noisy_action, time) if wrist is None else
+                             self.flow(latent, proprio, noisy_action, time, wrist=wrist))
         return mask_logits, velocity, latent, context
 
 
@@ -94,7 +95,9 @@ def restore_joint_model(seeker, checkpoint):
     flow_type = checkpoint.get("flow_type", "dense")
     if flow_type == "dense_action_expert":
         from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
-        flow = DenseFlowMatching(relative_actions=checkpoint.get("action_representation") == "relative_joint")
+        flow = DenseFlowMatching(
+            relative_actions=checkpoint.get("action_representation") == "relative_joint",
+            wrist_backbone=seeker.seeker.tracker_backbone if checkpoint.get("wrist_camera", False) else None)
     elif flow_type == "dense":
         flow = FlowPolicy()
     else:

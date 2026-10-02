@@ -44,6 +44,8 @@ def main():
         raise ValueError("output contains old sparse masks; generate dense masks in a new output directory")
     if any(bool(row.get("tcow_labels")) != args.tcow_labels for row in existing):
         raise ValueError("use a separate output directory for TCOW labels")
+    if any("wrist_camera" not in row for row in existing):
+        raise ValueError("output has no wrist video; use a fresh dataset directory")
     completed = {(row["seed"], row["target_object_id"], row["swaps"]) for row in existing}
     failed_path = args.output / "failed.jsonl"
     failures = [json.loads(line) for line in failed_path.read_text().splitlines()] if failed_path.exists() else []
@@ -71,7 +73,7 @@ def main():
         if (seed, target, swaps) in failed and args.skip_failed:
             continue
         directory = args.output / f"episode_{seed:06d}_{target}"
-        required = ("episode.json", "input.json", "rgb.mp4", "observation.npz", "supervision.npz")
+        required = ("episode.json", "input.json", "rgb.mp4", "wrist_rgb.mp4", "observation.npz", "supervision.npz")
         if args.tcow_labels:
             required += ("tcow_labels.npz", "query_mask.png")
         if all((directory / name).exists() for name in required):

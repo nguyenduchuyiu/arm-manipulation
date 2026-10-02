@@ -29,6 +29,13 @@ def split_rows(root):
     return train, val
 
 
+def require_wrist_data(root, rows):
+    for row in rows:
+        path = root / row["path"] / "wrist_rgb.mp4"
+        if not path.is_file():
+            raise FileNotFoundError(f"missing wrist video; collect synchronized multiview data: {path}")
+
+
 def policy_statistics(root, rows):
     """Mean/std on valid TRAIN action frames, without decoding RGB or depth."""
     if (root / "normalization.json").is_file():
@@ -105,7 +112,7 @@ def clip(episode, end: int, device: str):
     return rgbd, query, masks, proprio, action
 
 
-def load_policy_episode(path: Path):
+def load_policy_episode(path: Path, require_wrist=False):
     """Load 25 Hz policy data without the large three-mask supervision array."""
     meta = json.loads((path / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
@@ -131,6 +138,14 @@ def load_policy_episode(path: Path):
         raise ValueError(f"no valid 25-action chunk at policy start: {path}")
     episode = dict(rgb=rgb, depth=depth, proprio=proprio, action=action, action_valid=valid,
                    query=query, valid_ends=valid_ends, events=events, name=path.name)
+    if require_wrist:
+        wrist_meta = meta.get("wrist_camera")
+        if wrist_meta is None or wrist_meta["fps"] != 25 or wrist_meta["resolution"] != [320, 320]:
+            raise ValueError(f"missing synchronized 25 Hz wrist camera metadata: {path}")
+        wrist = np.stack(list(iio.imiter(path / "wrist_rgb.mp4", plugin="pyav")))
+        if wrist.shape != (n, 320, 320, 3) or wrist_meta["frames"] != n:
+            raise ValueError(f"wrist frames disagree with overview: {path}")
+        episode["wrist_rgb"] = wrist
     if (path / "relative_actions.npz").is_file():
         with np.load(path / "relative_actions.npz") as z:
             episode.update(relative_action=z["action"], relative_starts=z["starts"],
@@ -158,8 +173,8 @@ def policy_clip(episode, end: int, device: str):
     return rgbd, query, proprio, action
 
 
-def load_joint_episode(path: Path):
-    episode = load_policy_episode(path)
+def load_joint_episode(path: Path, require_wrist=False):
+    episode = load_policy_episode(path, require_wrist=require_wrist)
     with np.load(path / "tcow_labels.npz") as z:
         episode["mask"] = z["mask"]
     if len(episode["mask"]) != len(episode["rgb"]):
@@ -201,7 +216,7 @@ def training_samples(episode):
     return sample_plan(episode["action_valid"], episode["events"][0], episode["name"])
 
 
-def training_clip(episode, end: int, has_action: bool, device: str):
+def training_clip(episode, end: int, has_action: bool, device: str, include_wrist=False):
     rgbd, query, masks, proprio, action, _frames = joint_clip(episode, end, device)
     valid_steps = torch.zeros((1, 25), dtype=torch.bool, device=device)
     if has_action:
@@ -221,4 +236,8 @@ def training_clip(episode, end: int, has_action: bool, device: str):
             raise ValueError(f"missing relative chunk: {episode['name']}, {end}")
         np.testing.assert_array_equal(episode["relative_valid"][index], valid_steps[0].cpu().numpy())
         action = torch.from_numpy(episode["relative_action"][index].copy())[None].to(device)
-    return rgbd, query, masks, proprio, action, valid_steps
+    result = (rgbd, query, masks, proprio, action, valid_steps)
+    if include_wrist:
+        from memory_occlusion.experiments.tcow_joint_flow.wrist import wrist_tensor
+        result += (wrist_tensor(episode["wrist_rgb"][end], device),)
+    return result

@@ -13,7 +13,7 @@
 """Pretrained SmolVLA action layers with dense TCOW conditioning.
 
 Pairs of original layers form SA -> MLP -> CA -> MLP blocks. The VLM is
-replaced by 301 TCOW/proprio tokens, not by its per-layer hidden-state cache.
+replaced by dense TCOW/wrist/proprio tokens, not by its per-layer hidden-state cache.
 Attention, RoPE and gated MLP follow LeRobot SmolVLA (Apache-2.0).
 """
 from __future__ import annotations
@@ -91,7 +91,7 @@ class ExpertLayer(nn.Module):
             prefix_k, prefix_v = context_kv
             k = attn.k_proj(prefix_k.flatten(2)).reshape(batch, -1, 5, 64)
             v = attn.v_proj(prefix_v.flatten(2)).reshape(batch, -1, 5, 64)
-        # Every action reads all action tokens in SA and all 301 context tokens
+        # Every action reads all action tokens in SA and all visual/state tokens
         # in CA, retaining the existing policy's dense interaction.
         k = k.repeat_interleave(3, dim=2)
         v = v.repeat_interleave(3, dim=2)
@@ -124,11 +124,17 @@ class DenseFlowMatching(nn.Module):
     horizon = 25
     noise_dim = 32
 
-    def __init__(self, relative_actions=False):
+    def __init__(self, relative_actions=False, wrist_backbone=None):
         super().__init__()
         self.relative_actions = relative_actions
         self.visual = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
                                     nn.SiLU(), nn.Linear(256, 960))
+        self.wrist_enabled = wrist_backbone is not None
+        if self.wrist_enabled:
+            from memory_occlusion.experiments.tcow_joint_flow.wrist import WristEncoder
+            self.wrist_encoder = WristEncoder(wrist_backbone)
+            self.wrist_projection = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 960))
+            self.wrist_view_embedding = nn.Parameter(torch.randn(1, 1, 960) * .02)
         self.proprio = nn.Sequential(nn.Linear(6, 128), nn.SiLU(), nn.Linear(128, 256),
                                      nn.SiLU(), nn.Linear(256, 32))
         # Start the new proprio MLP as a residual on padded, normalized state.
@@ -155,7 +161,7 @@ class DenseFlowMatching(nn.Module):
         from safetensors.torch import load_file
         state = load_file(str(path))
         expected = {key for key in self.state_dict()
-                    if not key.startswith(("visual.", "proprio.", "state_mean", "state_std",
+                    if not key.startswith(("visual.", "proprio.", "wrist_", "state_mean", "state_std",
                                            "action_mean", "action_std"))}
         if state.keys() != expected:
             raise ValueError(f"action expert export keys differ: missing={sorted(expected - state.keys())}, "
@@ -167,14 +173,25 @@ class DenseFlowMatching(nn.Module):
                 "loaded_tensors": len(state), "loaded_parameters": sum(x.numel() for x in state.values()),
                 "new_parameters": sum(v.numel() for k, v in self.named_parameters() if k not in expected),
                 "blocks": 8, "expert_layers": 16, "width": 720,
-                "context_shape": [301, 960], "interaction": "bidirectional SA + dense CA"}
+                "context_shape": [701 if self.wrist_enabled else 301, 960],
+                "wrist_initialization": "TCOW spatial weights" if self.wrist_enabled else None,
+                "interaction": "bidirectional SA + dense CA"}
 
-    def conditioning(self, latent, proprio):
+    def conditioning(self, latent, proprio, wrist=None):
         if latent.shape[1:] != (300, 768) or proprio.shape[1:] != (6,):
             raise ValueError("expected TCOW [B,300,768] and proprio [B,6]")
         state = (proprio - self.state_mean) / self.state_std
         padded = F.pad(state, (0, 26)) + self.proprio(state)
-        context = torch.cat((self.visual(latent), self.state_proj(padded)[:, None]), dim=1)
+        visual = [self.visual(latent)]
+        if self.wrist_enabled:
+            if wrist is None:
+                raise ValueError("wrist-enabled policy requires current wrist RGB")
+            if len(wrist) != len(latent):
+                raise ValueError("wrist and TCOW batch sizes differ")
+            visual.append(self.wrist_projection(self.wrist_encoder(wrist)) + self.wrist_view_embedding)
+        elif wrist is not None:
+            raise ValueError("checkpoint has no wrist encoder")
+        context = torch.cat((*visual, self.state_proj(padded)[:, None]), dim=1)
         return context, [projection(context) for projection in self.context_projections]
 
     def set_statistics(self, statistics):
@@ -204,8 +221,8 @@ class DenseFlowMatching(nn.Module):
             x = self.layers[2 * index + 1](x, positions, kv)
         return -self.action_out_proj(self.norm(x))
 
-    def forward(self, latent, proprio, noisy_action, time):
-        context, kv = self.conditioning(latent, proprio)
+    def forward(self, latent, proprio, noisy_action, time, wrist=None):
+        context, kv = self.conditioning(latent, proprio, wrist)
         return self.velocity(noisy_action, time, kv)[:, :, :6], context
 
     def sample_noise(self, batch, device, generator=None):
@@ -220,8 +237,9 @@ class DenseFlowMatching(nn.Module):
         noisy = (1 - time[:, None, None]) * noise + time[:, None, None] * padded
         return noisy, time, normalized - noise[:, :, :6]
 
-    def sample(self, latent, proprio, noise, steps=10):
-        _, kv = self.conditioning(latent, proprio)
+    def sample(self, latent, proprio, noise, steps=10, wrist=None):
+        _, kv = (self.conditioning(latent, proprio) if wrist is None else
+                 self.conditioning(latent, proprio, wrist))
         estimate = noise.float()
         # Original SmolVLA Euler grid: t_smol=1, .9, ..., .1 for ten steps.
         for index in range(steps):

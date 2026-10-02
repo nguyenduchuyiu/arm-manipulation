@@ -19,7 +19,7 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 from memory_occlusion.experiments.tcow_joint_flow.data import (
-    load_joint_episode, load_policy_episode, policy_statistics, sample_index, split_rows, training_clip,
+    load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
     training_samples,
 )
 from memory_occlusion.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
@@ -41,14 +41,15 @@ def rank_batch(batch, sizes, rank):
     return (items if items else batch[:1]), len(items)
 
 
-def cache_cluster(data_root, rows, destination, flow_only=False):
+def cache_cluster(data_root, rows, destination, flow_only=False, require_wrist=False):
     """Decode once into temporary RAM files that every rank can map."""
     destination.mkdir()
     occupied = sum(p.stat().st_size for p in destination.parent.rglob("*.npy"))
     descriptors = []
     for index, row in enumerate(tqdm(rows, desc="load shared episodes", unit="episode",
                                      mininterval=5, file=sys.stdout)):
-        episode = (load_policy_episode if flow_only else load_joint_episode)(data_root / row["path"])
+        episode = (load_policy_episode if flow_only else load_joint_episode)(
+            data_root / row["path"], require_wrist=require_wrist)
         arrays, scalars = {}, {}
         for key, value in episode.items():
             if isinstance(value, np.ndarray):
@@ -115,6 +116,8 @@ def main():
     train_rows, val_rows = split_rows(args.data)
     if args.max_val_episodes:
         val_rows = val_rows[:args.max_val_episodes]
+    if args.wrist_camera:
+        require_wrist_data(args.data, train_rows + val_rows)
     train_rows = [train_rows[i] for i in rng.permutation(len(train_rows))]
     clusters = [train_rows[i:i + args.cluster_size]
                 for i in range(0, len(train_rows), args.cluster_size)]
@@ -143,7 +146,7 @@ def main():
     source_step = load_training_tracker(tcow, source, args.flow_only)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
-    flow = DenseFlowMatching()
+    flow = DenseFlowMatching(wrist_backbone=tcow.seeker.tracker_backbone if args.wrist_camera else None)
     imported = flow.load_pretrained(args.flow_weights)
     statistics = [policy_statistics(args.data, [r for rows in clusters for r in rows])
                   if rank == 0 else None]
@@ -201,7 +204,8 @@ def main():
     if rank == 0:
         shared_root.mkdir(mode=0o700)
     with ThreadPoolExecutor(max_workers=1) as loader:
-        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only)
+        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only,
+                                args.wrist_camera)
                   if rank == 0 else None)
         with tqdm(total=args.smoke_steps or total_steps, desc="train TCOW + flow (DDP)",
                   unit="step", mininterval=5, file=sys.stdout, disable=rank != 0) as progress:
@@ -216,7 +220,7 @@ def main():
                 wait_s += time.perf_counter() - waiting
                 future = (loader.submit(cache_cluster, args.data,
                                         clusters[(cluster_index + 1) % len(clusters)],
-                                        shared_root / str(cluster_index + 1), args.flow_only)
+                                        shared_root / str(cluster_index + 1), args.flow_only, args.wrist_camera)
                           if rank == 0 and
                           (not args.smoke_steps or (cluster_index + 1) * 4 < args.smoke_steps) and
                           cluster_index + 1 < len(clusters) * args.epochs else None)
@@ -240,9 +244,12 @@ def main():
                                [phases[0][0], phases[1][0], phases[0][-1], phases[1][-1]])
                 for batch in batches:
                     batch_items, count = rank_batch(batch, args.rank_batch_sizes, rank)
-                    samples = [training_clip(episodes[i][1], end, action, "cuda")
+                    samples = [training_clip(episodes[i][1], end, action, "cuda", include_wrist=args.wrist_camera)
                                for i, end, action in batch_items]
-                    rgbd, query, truth, proprio, action, valid = (torch.cat(parts) for parts in zip(*samples))
+                    tensors = [torch.cat(parts) for parts in zip(*samples)]
+                    rgbd, query, truth, proprio, action, valid = tensors[:6]
+                    wrist = tensors[6] if args.wrist_camera else None
+                    del tensors
                     is_action = batch[0][2]
                     model.train()
                     if args.flow_only:
@@ -253,7 +260,7 @@ def main():
                     valid_count = valid.sum().float() * bool(count)
                     dist.all_reduce(valid_count)
                     with torch.autocast("cuda", dtype=torch.bfloat16):
-                        logits, velocity, latent, context = engine(rgbd, query, proprio, noisy, tau)
+                        logits, velocity, latent, context = engine(rgbd, query, proprio, noisy, tau, wrist=wrist)
                         action_loss = (((velocity.float() - target).square() * valid[:, :, None]).sum()
                                        * (world * bool(count)) / (valid_count * 6)) if is_action else logits.new_zeros(())
                     mask_loss = (logits.sum() * 0 if args.flow_only else
@@ -297,7 +304,7 @@ def main():
                     progress.set_postfix(action=f"{logs[0].item():.3f}", mask=f"{logs[1].item():.3f}",
                                          chunks=len(batch) if is_action else 0, refresh=False)
                     # Release RGB-D clips and full-video masks before allocating the next batch.
-                    del samples, rgbd, query, truth, proprio, action, valid
+                    del samples, rgbd, query, truth, proprio, action, valid, wrist
                     del noisy, tau, target, logits, velocity, latent, context
                     del action_loss, mask_loss, total
                     if args.smoke_steps and step >= args.smoke_steps:

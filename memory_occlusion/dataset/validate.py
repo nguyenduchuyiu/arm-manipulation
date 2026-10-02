@@ -10,7 +10,10 @@ import numpy as np
 def validate(directory):
     metadata = json.loads((directory / "episode.json").read_text())
     model_input = json.loads((directory / "input.json").read_text())
-    if set(model_input) != {"rgb_video", "observation", "query_rgb", "decision_frames"}:
+    expected_input = {"rgb_video", "observation", "query_rgb", "decision_frames"}
+    if "wrist_camera" in metadata:
+        expected_input.add("wrist_rgb_video")
+    if set(model_input) != expected_input:
         raise ValueError("model input contains unexpected metadata")
     with np.load(directory / "observation.npz") as obs, np.load(directory / "supervision.npz") as gt:
         n = metadata["frames"]
@@ -121,6 +124,16 @@ def validate(directory):
     video = iio.immeta(directory / "rgb.mp4", plugin="pyav")
     if video["fps"] != 25 or abs(video["duration"] * 25 - n) > 1:
         raise ValueError("RGB video does not align with observations")
+    if "wrist_camera" in metadata:
+        wrist = metadata["wrist_camera"]
+        if wrist["resolution"] != [320, 320] or wrist["fps"] != 25 or wrist["frames"] != n:
+            raise ValueError("wrist camera metadata does not align")
+        if model_input["wrist_rgb_video"] != "wrist_rgb.mp4" or wrist["video"] != "wrist_rgb.mp4":
+            raise ValueError("unexpected wrist video path")
+        video = iio.immeta(directory / "wrist_rgb.mp4", plugin="pyav")
+        shape = iio.improps(directory / "wrist_rgb.mp4", plugin="pyav", index=0).shape
+        if video["fps"] != 25 or abs(video["duration"] * 25 - n) > 1 or shape != (320, 320, 3):
+            raise ValueError("wrist video does not align with observations")
     if not (directory / metadata["query_rgb"]).is_file():
         raise ValueError("missing query image")
     return n

@@ -10,7 +10,7 @@ import sys
 import imageio.v3 as iio
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from tqdm.auto import tqdm
 
 from memory_occlusion.dataset.episode import context
@@ -18,6 +18,7 @@ from memory_occlusion.environment.env import MemoryOcclusionEnv
 from memory_occlusion.experiments.tcow_joint_flow.visualization import mask_panel
 from memory_occlusion.experiments.tcow_joint_flow.model import expand_depth_channel, restore_joint_model
 from memory_occlusion.experiments.tcow_joint_flow.tcow import Seeker
+from memory_occlusion.experiments.tcow_joint_flow.wrist import wrist_tensor
 from memory_occlusion.task import normalized
 
 
@@ -27,7 +28,7 @@ def physical_action(action, limits):
 
 
 @torch.inference_mode()
-def infer(model, rgbs, depths, query_visible, proprio=None, noise=None):
+def infer(model, rgbs, depths, query_visible, proprio=None, noise=None, wrist_rgb=None):
     device = next(model.parameters()).device
     index = np.rint(np.linspace(0, len(rgbs) - 1, 30)).astype(int)
     rgb = torch.from_numpy(np.stack([rgbs[i] for i in index])).permute(3, 0, 1, 2).to(device)
@@ -43,7 +44,12 @@ def infer(model, rgbs, depths, query_visible, proprio=None, noise=None):
         latent = model._latent
         if proprio is not None:
             state = torch.from_numpy(proprio[None]).to(device)
-            estimate = model.flow.sample(latent, state, noise)
+            if getattr(model.flow, "wrist_enabled", False):
+                if wrist_rgb is None:
+                    raise ValueError("wrist-enabled rollout requires live wrist RGB")
+                estimate = model.flow.sample(latent, state, noise, wrist=wrist_tensor(wrist_rgb, device))
+            else:
+                estimate = model.flow.sample(latent, state, noise)
     masks = (logits[0, :, -1].float() > 0).cpu().numpy()
     chunk = estimate[0].float().cpu().numpy() if proprio is not None else None
     return chunk, masks
@@ -90,12 +96,16 @@ def run_rollout(model, args, checkpoint_step):
     target = meta["target_object_id"]
     target_geom = env.model.geom(target + "_visual").id
     rgbs, depths = [], []
+    use_wrist = getattr(model.flow, "wrist_enabled", False)
+    context_wrists = []
     query_visible = None
     def record(_phase, _valid):
         nonlocal query_visible
         rgb, depth = env._overview()
         rgbs.append(rgb[40:280].copy())
         depths.append(depth[40:280].copy())
+        if use_wrist:
+            context_wrists.append(env.wrist_image())
         if query_visible is None:
             query_visible = (env.segmentation()[40:280, :, 0] == target_geom)
     context(env, meta["context_plan"], record)
@@ -118,6 +128,15 @@ def run_rollout(model, args, checkpoint_step):
     policy_calls = 0
     max_lift = 0.0
     reason = "max_total_frames"
+    def panel(rgb, masks, frame, source, wrist=None, visible_query=None):
+        image = mask_panel(rgb, masks, frame, source, visible_query)
+        if use_wrist:
+            wrist_panel = Image.fromarray(wrist).resize((240, 240), Image.Resampling.BILINEAR)
+            draw = ImageDraw.Draw(wrist_panel)
+            draw.rectangle((0, 0, 239, 17), fill=(0, 0, 0))
+            draw.text((4, 3), "Wrist RGB", fill=(255, 255, 255))
+            image = np.concatenate((image, np.asarray(wrist_panel)), axis=1)
+        return image
     try:
         # Process the full scripted context before the first policy action.
         for index in tqdm(range(len(rgbs)), desc="TCOW context", unit="frame",
@@ -125,8 +144,9 @@ def run_rollout(model, args, checkpoint_step):
             prefix_rgb = rgbs[:index + 1]
             prefix_depth = depths[:index + 1]
             _, masks = infer(model, prefix_rgb, prefix_depth, query_visible)
-            writer.write(mask_panel(rgbs[index], masks, index, index,
-                                    query_visible if index == 0 else None), is_batch=False)
+            writer.write(panel(rgbs[index], masks, index, index,
+                               context_wrists[index] if use_wrist else None,
+                               query_visible if index == 0 else None), is_batch=False)
             context_calls += 1
         observation = env.observe()
         rgbs.append(observation["overview_rgb"][40:280].copy())
@@ -139,7 +159,8 @@ def run_rollout(model, args, checkpoint_step):
             while len(trace) < action_budget:
                 source_frame = len(rgbs) - 1
                 joints = normalized(env.data.qpos[env.robot_qpos_addresses], limits)
-                chunk, masks = infer(model, rgbs, depths, query_visible, joints, fixed_noise)
+                chunk, masks = infer(model, rgbs, depths, query_visible, joints, fixed_noise,
+                                     wrist_rgb=observation["wrist_rgb"] if use_wrist else None)
                 policy_chunks.append({"source_frame": source_frame,
                                       "proprio": joints.tolist(),
                                       "action_25_raw": chunk.tolist()})
@@ -151,7 +172,8 @@ def run_rollout(model, args, checkpoint_step):
                     action = chunk[offset].copy()
                     action[:5] = np.clip(action[:5], -1, 1)
                     action[5] = float(action[5] >= .5)
-                    writer.write(mask_panel(rgbs[-1], masks, frame_index, source_frame),
+                    writer.write(panel(rgbs[-1], masks, frame_index, source_frame,
+                                       observation["wrist_rgb"] if use_wrist else None),
                                  is_batch=False)
                     observation, _, terminated, truncated, _ = env.step(
                         physical_action(action, limits))
@@ -192,6 +214,7 @@ def run_rollout(model, args, checkpoint_step):
               "action_steps": len(trace), "fps": 25, "video_frames": context_calls + len(trace),
               "max_total_frames": args.max_total_frames, "action_budget": action_budget,
               "execute_chunk": args.execute_chunk, "policy_calls": policy_calls,
+              "wrist_camera": use_wrist, "context_tokens": 701 if use_wrist else 301,
               "selected_cover": env.selected_cover, "correct_cover": meta["correct_cover_body"],
               "cover_choice_correct": env.selected_cover == meta["correct_cover_body"],
               "cover_removed": bool(env._cover_in_drop_zone() and
@@ -201,7 +224,7 @@ def run_rollout(model, args, checkpoint_step):
               "success": bool(env.success and env.selected_cover == meta["correct_cover_body"]),
               "failure_reason": env.failure_reason, "stop_reason": reason,
               "video": str(args.output / "rollout_masks_25hz.mp4"),
-              "note": "Only the first-frame visible GT query mask is supplied to TCOW; all later RGB-D and proprio are live sim observations."}
+              "note": "Only the first-frame visible GT query mask is supplied to TCOW; all later RGB-D, proprio and wrist RGB (when enabled) are live sim observations."}
     (args.output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"event": "complete", **result}), flush=True)
     return result

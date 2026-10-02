@@ -28,10 +28,11 @@ def evaluate(model, root, rows, device, distributed=False):
     closing = np.zeros((2, 3), np.float64)
     ious = np.zeros(3, np.float64)
     chunks = 0
+    use_wrist = getattr(model.flow, "wrist_enabled", False)
     for row in tqdm(rows[rank::world], desc="validate episodes", unit="episode",
                     mininterval=5, file=sys.stdout, disable=rank != 0):
         path = root / row["path"]
-        episode = load_joint_episode(path)
+        episode = load_joint_episode(path, require_wrist=use_wrist)
         meta = json.loads((path / "episode.json").read_text())
         phases = np.zeros((2, len(episode["action_valid"])), dtype=bool)
         for index, name in enumerate(("cover_close", "object_close")):
@@ -43,7 +44,9 @@ def evaluate(model, root, rows, device, distributed=False):
         ends = [end for end, has_action in training_samples(episode) if has_action]
         for end in tqdm(ends, desc=f"validate {path.name}", unit="chunk", leave=False,
                         mininterval=5, file=sys.stdout, disable=rank != 0):
-            rgbd, query, truth, proprio, action, valid = training_clip(episode, end, True, device)
+            tensors = training_clip(episode, end, True, device, include_wrist=use_wrist)
+            rgbd, query, truth, proprio, action, valid = tensors[:6]
+            wrist = tensors[6] if use_wrist else None
             if episode.get("action_representation") == "relative_joint":
                 action = action.clone()
                 action[:, :, :5] += proprio[:, None, :5]
@@ -53,7 +56,8 @@ def evaluate(model, root, rows, device, distributed=False):
             with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"):
                 model._latent = None
                 logits, _ = model.tcow(rgbd, query)
-                estimate = model.flow.sample(model._latent, proprio, noise)
+                estimate = (model.flow.sample(model._latent, proprio, noise, wrist=wrist) if use_wrist else
+                            model.flow.sample(model._latent, proprio, noise))
             if not torch.isfinite(estimate).all():
                 raise ValueError(f"nonfinite validation action: {path}, frame {end}")
             predicted = estimate[0].float().cpu().numpy()

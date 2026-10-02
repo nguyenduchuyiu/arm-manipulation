@@ -65,6 +65,10 @@ def main():
             if not (path / name).is_file():
                 raise FileNotFoundError(path / name)
             (output / name).symlink_to(path / name)
+        if "wrist_camera" in meta:
+            if not (path / "wrist_rgb.mp4").is_file():
+                raise FileNotFoundError(path / "wrist_rgb.mp4")
+            (output / "wrist_rgb.mp4").symlink_to(path / "wrist_rgb.mp4")
         np.savez_compressed(output / "relative_actions.npz", **chunks)
         restored = chunks["action"].copy()
         restored[..., :5] += chunks["anchor"][:, None, :5]

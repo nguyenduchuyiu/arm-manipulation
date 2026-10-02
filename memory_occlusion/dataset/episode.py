@@ -167,6 +167,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         return writer
 
     rgb_writer = video_writer("rgb.mp4")
+    wrist_writer = video_writer("wrist_rgb.mp4")
     mask_writer = video_writer("mask_preview.mp4") if previews else None
     depth_writer = video_writer("depth_preview.mp4") if previews else None
 
@@ -223,6 +224,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                                         cover_amodal if frontmost_cover else np.zeros_like(cover_amodal),
                                         cover_amodal if contained else np.zeros_like(cover_amodal))))
         rgb_writer.write(rgb, is_batch=False)
+        wrist_writer.write(env.wrist_image(), is_batch=False)
         if previews:
             depth_gray = (255 * (1 - np.clip((d - .4) / 1.2, 0, 1))).astype(np.uint8)
             depth_writer.write(np.repeat(depth_gray[:, :, None], 3, axis=2), is_batch=False)
@@ -331,6 +333,12 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                                         "quaternion": env.model.camera("overview").quat.tolist(),
                                         "fovy": float(env.model.camera("overview").fovy[0]),
                                         "crop_top": top},
+                    "wrist_camera": {"video": "wrist_rgb.mp4", "resolution": [320, 320],
+                                     "body": env.model.body(int(env.model.camera("wrist").bodyid[0])).name,
+                                     "position": env.model.camera("wrist").pos.tolist(),
+                                     "quaternion": env.model.camera("wrist").quat.tolist(),
+                                     "fovy": float(env.model.camera("wrist").fovy[0]),
+                                     "fps": FPS, "frames": len(depth)},
                     "tcow_labels": "tcow_labels.npz" if tcow_labels else None,
                     "decision_frames": decision,
                     "decision_times_s": {k: v / FPS for k, v in decision.items()},
@@ -356,11 +364,13 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         (directory / "episode.json").write_text(json.dumps(metadata, indent=2) + "\n")
         (directory / "input.json").write_text(json.dumps({
             "rgb_video": "rgb.mp4", "observation": "observation.npz",
+            "wrist_rgb_video": "wrist_rgb.mp4",
             "query_rgb": metadata["query_rgb"], "decision_frames": decision,
         }, indent=2) + "\n")
         return metadata
     finally:
         rgb_writer.close()
+        wrist_writer.close()
         if previews:
             mask_writer.close()
             depth_writer.close()

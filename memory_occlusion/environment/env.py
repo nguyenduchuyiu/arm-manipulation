@@ -279,10 +279,13 @@ class MemoryOcclusionEnv(gym.Env):
             )
         return references
 
+    def wrist_image(self) -> np.ndarray:
+        self.renderer.update_scene(self.data, camera="wrist")
+        return self.renderer.render().copy()
+
     def observe(self) -> dict[str, np.ndarray]:
         rgb, depth = self._overview()
-        self.renderer.update_scene(self.data, camera="wrist")
-        wrist = self.renderer.render().copy()
+        wrist = self.wrist_image()
         reference = (np.zeros((REFERENCE_SIZE, REFERENCE_SIZE, 3), dtype=np.uint8)
                      if self.query_target is None else self.reference_images[self.query_target])
         return {"overview_rgb": rgb, "overview_depth_m": depth,
