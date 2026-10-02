@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+import sys
 import json
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -11,14 +14,10 @@ from memory_occlusion.dataset.validate import validate
 from memory_occlusion.environment.env import TARGETS
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("root", type=Path)
-    parser.add_argument("--pilot-scenes", type=int, default=0)
-    args = parser.parse_args()
-    plan = [json.loads(line) for line in (args.root / "plan.jsonl").read_text().splitlines()]
-    if args.pilot_scenes:
-        plan = plan[:args.pilot_scenes]
+def audit(root: Path, pilot_scenes=0, workers=1):
+    plan = [json.loads(line) for line in (root / "plan.jsonl").read_text().splitlines()]
+    if pilot_scenes:
+        plan = plan[:pilot_scenes]
     if not plan or len({row["seed"] for row in plan}) != len(plan):
         raise ValueError("empty plan or scene seed appears in multiple splits")
     rows = []
@@ -26,7 +25,7 @@ def main():
     for scene in tqdm(plan, desc="audit scenes", unit="scene", mininterval=5):
         group, seed, split = scene["group"], scene["seed"], scene["split"]
         for target in TARGETS:
-            path = args.root / group / f"episode_{seed:06d}_{target}"
+            path = root / group / f"episode_{seed:06d}_{target}"
             if not (path / "episode.json").is_file():
                 raise FileNotFoundError(path / "episode.json")
             meta = json.loads((path / "episode.json").read_text())
@@ -39,8 +38,7 @@ def main():
             if seed in contexts and contexts[seed] != meta["context_plan"]:
                 raise ValueError(f"target queries use different contexts: {path}")
             contexts[seed] = meta["context_plan"]
-            validate(path)
-            rows.append({"path": str(path.relative_to(args.root)), "seed": seed,
+            rows.append({"path": str(path.relative_to(root)), "seed": seed,
                          "target": target, "layout": scene["layout"], "group": group,
                          "split": split, "swaps": meta["swaps"],
                          "cover": meta["correct_cover_body"],
@@ -50,6 +48,10 @@ def main():
                          "resolution": meta["resolution"],
                          "camera_fovy": meta["overview_camera"]["fovy"],
                          "cover_released_frame": meta["semantic_transition_frames"]["cover_released"]})
+    with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
+        for _ in tqdm(pool.map(validate, [root / row["path"] for row in rows]),
+                      total=len(rows), desc="audit episodes", unit="episode", mininterval=5, file=sys.stdout):
+            pass
     if any(row["resolution"] != [240, 320] or row["camera_fovy"] != 50
            for row in rows):
         raise ValueError("dataset mixes camera settings or resolutions")
@@ -70,11 +72,23 @@ def main():
                         max(path["arc_m"] for path in paths)],
         "route_flip_counts": dict(Counter(str(path["route_flip"]) for path in paths)),
     }
-    prefix = "pilot_" if args.pilot_scenes else ""
-    (args.root / f"{prefix}manifest.jsonl").write_text(
+    prefix = "pilot_" if pilot_scenes else ""
+    (root / f"{prefix}manifest.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in rows))
-    (args.root / f"{prefix}audit.json").write_text(json.dumps(summary, indent=2) + "\n")
+    (root / f"{prefix}audit.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
+    return rows
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", type=Path)
+    parser.add_argument("--pilot-scenes", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
+    args = parser.parse_args()
+    if not 1 <= args.workers <= 8:
+        raise ValueError("use 1–8 audit workers")
+    audit(args.root, args.pilot_scenes, args.workers)
 
 
 if __name__ == "__main__":

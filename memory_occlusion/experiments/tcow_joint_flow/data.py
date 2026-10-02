@@ -40,8 +40,8 @@ def policy_statistics(root, rows):
     """Mean/std on valid TRAIN action frames, without decoding RGB or depth."""
     if (root / "normalization.json").is_file():
         statistics = json.loads((root / "normalization.json").read_text())
-        if statistics["action_representation"] != "relative_joint" or any(r["split"] != "train" for r in rows):
-            raise ValueError("relative normalization must use train data")
+        if statistics["action_representation"] not in ("absolute_joint", "relative_joint") or any(r["split"] != "train" or r["group"] != "standard" for r in rows):
+            raise ValueError("action normalization must use standard train data")
         return statistics
     total = 0
     sums = {name: np.zeros(6, np.float64) for name in ("state", "action")}

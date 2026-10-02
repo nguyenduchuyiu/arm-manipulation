@@ -105,18 +105,31 @@ to physical hardware. New-layout and unseen-object evaluation remain to be run.
 
 ## Local 25 Hz TCOW and Flow Matching data
 
-The frozen scene plan in `datasets/memory_occlusion_tcow_25hz_240x320_v1/`
-contains 200 standard and 20 composition scenes, with four target queries per
-scene. Run `bash memory_occlusion/dataset/generate_serious_25hz_local.sh` from the
-repository root to generate and audit all 880 episodes at 25 Hz and 240 × 320.
-The script resumes episodes already listed in each split's `index.jsonl`.
+The frozen plan `dataset/scene_plan.jsonl` contains 200 standard and 20
+composition scenes, with four target queries per scene (880 episodes).
+From the repository root, collect both cameras, depth and TCOW masks, audit
+all episodes, then fit TRAIN normalization:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+.venv/bin/python -m memory_occlusion.dataset.generate_dataset \
+  --plan memory_occlusion/dataset/scene_plan.jsonl \
+  --output memory_occlusion/datasets/memory_occlusion_multiview_25hz_delta_v1 \
+  --action-mode delta --workers 8
+```
+
+For absolute joints, use `--action-mode absolute` and a fresh output directory
+such as `memory_occlusion_multiview_25hz_absolute_v1`. Gripper is absolute in
+both modes. Delta processing follows collection; chunks use H25, stride10 and
+a fixed observed-state anchor. Both datasets are self-contained. All stages
+show tqdm progress. Existing output directories are rejected.
 
 To train only Flow Matching on Apple MPS after data generation and the TCOW
 checkpoint download finish:
 
 ```bash
 .venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context \
-  --data memory_occlusion/datasets/memory_occlusion_tcow_25hz_240x320_v1 \
+  --data memory_occlusion/datasets/memory_occlusion_multiview_25hz_delta_v1 \
   --weights memory_occlusion/checkpoints/tcow_rgbd_pretrained_joint1200_20260930.pth \
   --flow-weights memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors \
   --output memory_occlusion/checkpoints/flow_mps_25hz \

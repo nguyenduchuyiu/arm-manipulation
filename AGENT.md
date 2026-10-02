@@ -5,6 +5,8 @@ uv env named ".venv"
 
 ## Files and directoy management
 
+* Delete temporary test, preparation, and execution code after use unless the user asks to keep it.
+
 * Keep the repository root focused on the overall arm manipulation project and shared assets, controllers, and environments.
 * Put task-specific code, scenes, data tools, and docs in a top-level folder for that task (for example, `memory_occlusion/`), organized into subfolders by role.
 

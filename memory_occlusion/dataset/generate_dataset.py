@@ -1,16 +1,20 @@
-"""Generate complete 25 Hz expert episodes; stop on an unsuccessful expert."""
+"""Collect synchronized 25 Hz multiview episodes, audit, then finalize actions."""
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 from multiprocessing import get_context
 from pathlib import Path
+import sys
 
 import numpy as np
 from tqdm.auto import tqdm
 
 from memory_occlusion.environment.env import TARGETS
+from memory_occlusion.dataset.actions import finalize_actions
+from memory_occlusion.dataset.audit_tcow_dataset import audit
 from memory_occlusion.dataset.episode import generate
 from memory_occlusion.dataset.references import create_references
+from memory_occlusion.dataset.validate import validate
 
 
 def _generate_one(job):
@@ -21,86 +25,70 @@ def _generate_one(job):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--plan", type=Path, help="frozen scene/split plan; collect all queries then audit")
+    parser.add_argument("--action-mode", choices=("absolute", "delta"), default="absolute")
     parser.add_argument("--episodes", type=int, default=4)
     parser.add_argument("--start-seed", type=int, default=0)
-    parser.add_argument("--seed-file", type=Path,
-                        help="one scene seed per line; generates all four target queries")
+    parser.add_argument("--seed-file", type=Path)
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--skip-failed", action="store_true",
-                        help="record expert failures and continue generating other seeds")
-    parser.add_argument("--output", type=Path, default=Path("outputs/memory_occlusion/dataset"))
+    parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--layout", choices=("standard", "new_layout"), default="standard")
-    parser.add_argument("--tcow-labels", action="store_true",
-                        help="save 240x320 target, occluder, and container masks at 25 Hz")
+    parser.add_argument("--tcow-labels", action="store_true")
     args = parser.parse_args()
-    if args.episodes < 1:
-        raise ValueError("episodes must be positive")
-    create_references(args.output)
-    index_path = args.output / "index.jsonl"
-    existing = [json.loads(line) for line in index_path.read_text().splitlines()] if index_path.exists() else []
-    if any(row["layout"] != args.layout for row in existing):
-        raise ValueError("use a separate output directory for each layout type")
-    if any("semantic_transition_frames" not in row for row in existing):
-        raise ValueError("output contains old sparse masks; generate dense masks in a new output directory")
-    if any(bool(row.get("tcow_labels")) != args.tcow_labels for row in existing):
-        raise ValueError("use a separate output directory for TCOW labels")
-    if any("wrist_camera" not in row for row in existing):
-        raise ValueError("output has no wrist video; use a fresh dataset directory")
-    completed = {(row["seed"], row["target_object_id"], row["swaps"]) for row in existing}
-    failed_path = args.output / "failed.jsonl"
-    failures = [json.loads(line) for line in failed_path.read_text().splitlines()] if failed_path.exists() else []
-    failed = {(row["seed"], row["target_object_id"], row["swaps"]) for row in failures}
-
-    def record(result):
-        seed = result["seed"]
-        with index_path.open("a") as stream:
-            stream.write(json.dumps(result) + "\n")
-        completed.add((seed, result["target_object_id"], result["swaps"]))
-
+    if not 1 <= args.workers <= 8 or args.episodes < 1:
+        raise ValueError("use 1–8 workers and positive episodes")
+    if args.output.exists():
+        raise FileExistsError(f"use a fresh dataset directory: {args.output}")
+    if args.plan:
+        if args.seed_file or args.start_seed or args.layout != "standard":
+            raise ValueError("plan specifies scene seeds and layouts")
+        plan_text = args.plan.read_text()
+        plan = [json.loads(line) for line in plan_text.splitlines()]
+        if not plan or len({scene["seed"] for scene in plan}) != len(plan):
+            raise ValueError("empty plan or repeated scene seed")
+        args.tcow_labels = True
+    else:
+        seeds = ([int(line) for line in args.seed_file.read_text().splitlines()]
+                 if args.seed_file else list(range(args.start_seed, args.start_seed + (args.episodes + 3) // 4)))
+        if len(seeds) != len(set(seeds)):
+            raise ValueError("duplicate scene seed")
+        plan = [dict(seed=seed, group="", layout=args.layout,
+                     swaps=int(np.random.default_rng(seed + 10000).integers(1, 4))) for seed in seeds]
+    args.output.mkdir(parents=True)
+    if args.plan:
+        (args.output / "plan.jsonl").write_text(plan_text)
     jobs = []
-    seeds = ([int(line) for line in args.seed_file.read_text().splitlines()]
-             if args.seed_file else
-             [args.start_seed + index for index in range((args.episodes + 3) // 4)])
-    if len(seeds) != len(set(seeds)):
-        raise ValueError("seed file contains duplicate scene seeds")
-    for index, (seed, target) in enumerate(
-            (seed, target) for seed in seeds for target in TARGETS):
-        if not args.seed_file and index >= args.episodes:
-            break
-        swaps = int(np.random.default_rng(seed + 10000).integers(1, 4))
-        if (seed, target, swaps) in completed:
-            continue
-        if (seed, target, swaps) in failed and args.skip_failed:
-            continue
-        directory = args.output / f"episode_{seed:06d}_{target}"
-        required = ("episode.json", "input.json", "rgb.mp4", "wrist_rgb.mp4", "observation.npz", "supervision.npz")
-        if args.tcow_labels:
-            required += ("tcow_labels.npz", "query_mask.png")
-        if all((directory / name).exists() for name in required):
-            result = json.loads((directory / "episode.json").read_text())
-            if result["swaps"] == swaps and result["success"]:
-                record(result)
-                continue
-        jobs.append((args.output, seed, target, swaps, args.layout, args.tcow_labels))
-    if args.workers < 1:
-        raise ValueError("workers must be positive")
+    for scene in plan:
+        output = args.output / scene["group"]
+        create_references(output)
+        jobs.extend((output, scene["seed"], target, scene["swaps"], scene["layout"], args.tcow_labels)
+                    for target in TARGETS)
+    if not args.plan and not args.seed_file:
+        jobs = jobs[:args.episodes]
+    print(json.dumps({"event": "collection_start", "episodes": len(jobs), "workers": args.workers,
+                      "action_mode": args.action_mode, "output": str(args.output)}), flush=True)
+    rows = []
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=get_context("spawn")) as pool:
         futures = {pool.submit(_generate_one, job): job for job in jobs}
-        for index, future in enumerate(tqdm(as_completed(futures), total=len(futures),
-                                            desc="generate episodes", unit="episode", mininterval=5), 1):
-            _, seed, target, swaps, _, _ = futures[future]
-            try:
-                result = future.result()
-            except RuntimeError as error:
-                if not args.skip_failed:
-                    raise
-                with failed_path.open("a") as stream:
-                    stream.write(json.dumps({"seed": seed, "target_object_id": target,
-                                             "swaps": swaps, "error": str(error)}) + "\n")
-                tqdm.write(f"{index}/{len(jobs)}: seed={seed}, target={target}, failed: {error}")
-                continue
-            record(result)
-            tqdm.write(f"{index}/{len(jobs)}: seed={seed}, target={target}, {result['split']}")
+        for future in tqdm(as_completed(futures), total=len(futures), desc="collect episodes",
+                           unit="episode", mininterval=5, file=sys.stdout):
+            result = future.result()
+            output = futures[future][0]
+            with (output / "index.jsonl").open("a") as stream:
+                stream.write(json.dumps(result) + "\n")
+            rows.append(dict(path=str((output / f"episode_{result['seed']:06d}_{result['target_object_id']}").relative_to(args.output)),
+                             split=result["split"], group=output.name if args.plan else "standard"))
+            tqdm.write(f"completed seed={result['seed']} target={result['target_object_id']} frames={result['frames']}")
+    print("Collection complete; auditing every episode.", flush=True)
+    if args.plan:
+        rows = audit(args.output, workers=args.workers)
+    else:
+        with ProcessPoolExecutor(max_workers=args.workers, mp_context=get_context("spawn")) as pool:
+            for _ in tqdm(pool.map(validate, [args.output / row["path"] for row in rows]),
+                          total=len(rows), desc="audit episodes", unit="episode", file=sys.stdout):
+                pass
+        (args.output / "manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+    finalize_actions(args.output, rows, args.action_mode)
 
 
 if __name__ == "__main__":

@@ -27,45 +27,11 @@ mask minibatches forward TCOW alone; they skip the wrist encoder and FM.
 Closed loop supplies the latest live wrist image at each K10 replan. Videos
 append the wrist view beside RGB and the three predicted masks.
 
-Dataset generation now saves synchronized, uncropped `wrist_rgb.mp4` at
-25 Hz plus camera metadata. Old overview-only data cannot train a wrist
-policy; backfill wrist views or collect a fresh dataset before training. Both trainers and
-validation require exact wrist/overview frame alignment and reject missing
-wrist data before creating a run. Relative-joint conversion links this extra video as well.
-Use `--no-wrist-camera` only to reproduce the previous overview-only experiment.
-
-### Backfill existing episodes
-
-`backfill_wrist` restores each frame from recorded observed joint positions
-and object/cover poses, then runs only forward kinematics and rendering. It
-preserves the split, absolute/relative action chunks, masks and normalization.
-Original large files are linked read-only; only wrist videos and metadata are
-new. It does not rerun the expert, dynamics, IK, depth or mask generation.
-
-Old records omitted the left jaw/pinion, so their poses are reconstructed from
-the geometric joint constraints. Clipped/float32 proprio and old post-step
-render states may also introduce small differences. Each episode is gated on
-reconstructed overview RGB and visible-mask agreement at reveal, decisions,
-approach, closure, grasp, release and final frames. These checks bound visible
-alignment; they do not establish bit-identical wrist images. New collection
-saves full `qpos` and renders after `mj_forward` to avoid this approximation.
-
-```bash
-.venv/bin/python -m memory_occlusion.dataset.backfill_wrist \
-  --source /path/to/memory_occlusion_relative_joint_25hz_h25_k10_v1 \
-  --output /path/to/memory_occlusion_multiview_relative_joint_25hz_v1 \
-  --workers 4
-```
-
-For the gate, use `--max-episodes 1` with a separate smoke output. Add `--resume`
-only when resuming the same source/output configuration after interruption.
-Per-frame/per-episode tqdm progress and reconstruction metrics appear on stdout.
-Run long server commands through `tee` in `huy` tmux. `wrist_backfill.json` per
-episode and `backfill_summary.json` record checks and timings. Existing raw
-data remain unchanged. A missing saved pose or failed gate stops the job.
-Checkpoints store `wrist_camera` and `context_tokens`; restoration constructs
-the recorded architecture and loads strictly. Existing comparison
-checkpoints still restore with 301 tokens.
+Dataset generation saves synchronized overview RGB-D, wrist RGB and three TCOW
+mask channels at 25 Hz. Collect a fresh dataset with the command in
+[memory_occlusion/README.md](../../README.md). Missing or misaligned wrist views
+are rejected by training and validation. Use `--no-wrist-camera` only to restore
+previous overview-only experiments. Checkpoints record their architecture.
 
 `flow_matching.py` loads the 16 action layers, gated MLPs, RMSNorms, action/time
 projections, state projection and eight context K/V projections from
@@ -157,13 +123,6 @@ drop zone. This is success within that frame budget, which may be shorter
 than an expert demonstration. Test scenes are excluded. `best.pt` continues to
 use the expanded offline `action_mae`; rollout scores are reported separately.
 
-Run the padding/phase and distributed-aggregation regression checks locally:
-
-```bash
-.venv/bin/python -m unittest memory_occlusion.experiments.tcow_joint_flow.test_validation -v
-.venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.test_wrist -v
-```
-
 ```bash
 CUDA_VISIBLE_DEVICES=2,5 RUN_NAME=memory_occlusion_ddp_smoke_20261001 \
   bash memory_occlusion/experiments/tcow_joint_flow/train_distributed_server.sh \
@@ -179,33 +138,19 @@ Shared buffers are capped at 48 GiB, leaving RAM for the model and decoder.
 CPU affinity must cap the entire job to eight cores. Do not start if total RAM
 or any selected GPU's memory exceeds the experiment limits.
 
-`smoke_policy.py` verifies pretrained import, dense spatial conditioning,
-inference and backward. Supply `--tcow-checkpoint` and `--seeker-config` (JSON
-`seeker_args` from that TCOW checkpoint's config) to also check action loss
-reaches the TCOW patch embedding and context mask loss never calls FM.
-This synthetic test checks connectivity, not task performance.
-
 `rollout.py`, `benchmark.py` and the diagnostics restore the architecture and
 normalization from the joint checkpoint. The previous dense decoder remains
 available solely to restore checkpoints needed for comparison.
 
 ## Relative-joint experiment
 
-`memory_occlusion.dataset.prepare_relative_actions` accepts `--source` and a
-fresh `--output` dataset directory. It writes each stride-ten H25 chunk as
-`expert_command[t:t+25,:5] - observed_proprio[t,:5]`, keeps gripper absolute,
-and fits action mean/std on valid TRAIN chunk entries only. State statistics
-use valid TRAIN frames. Each episode has its own `relative_actions.npz`; RGB-D,
-absolute source labels and metadata are linked read-only to the source. The
-new dataset depends on that retained source. Train/val/test manifests are
-preserved. `normalization.json` and `dataset.json` record the new convention.
-
-`memory_occlusion.dataset.replay_relative_actions --data DATA --output OUTPUT`
-decodes standardized labels and executes ten actions per chunk, fixing the
-live observed anchor for the entire chunk. It selects ten distinct train
-scenes spanning targets and one/two/three swaps, writes 25 Hz videos and
-traces, and exits with an error unless all ten complete cover removal,
-target grasp and placement. This gate uses the full expert action duration.
+The data generator accepts `--action-mode absolute|delta`. Delta mode adds an
+in-place postprocessing stage after collection and audit: each stride-ten H25
+chunk is `expert_command[t:t+25,:5] - observed_proprio[t,:5]`, with absolute
+gripper. It retains the original absolute labels and writes `relative_actions.npz`
+inside each episode. No linked source dataset is needed. Normalization uses only
+valid standard TRAIN samples; `normalization.json` and `dataset.json` record the
+convention. Absolute mode retains absolute labels and fits their TRAIN statistics.
 
 Pass the new dataset to either trainer with `--flow-only --epochs 1`. A joint
 checkpoint may be supplied as `--weights` in this frozen mode: only TCOW and
