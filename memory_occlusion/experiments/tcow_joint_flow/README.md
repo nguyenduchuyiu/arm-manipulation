@@ -1,5 +1,8 @@
 # Memory occlusion: joint tracking and action policy
 
+For the task, dataset splits, complete data flow and loss routing, start with
+the [task README](../../README.md). This document describes the policy and commands.
+
 TCOW processes RGB-D history and the visible target mask on the first frame.
 Its final frame supplies 300 spatial tokens of width 768. A learned visual
 adapter maps them through width 256 to 960. Proprio supplies one state token.
@@ -52,14 +55,19 @@ checkpoint's 32 dimensions internally. Beta time sampling, sinusoidal time
 embedding and ten-step Euler inference follow SmolVLA. The public time
 convention is noise at zero; both the pretrained time and velocity sign are
 reversed together. Mean/std statistics use only valid action frames in the
-train split, and are stored in the joint checkpoint. External actions remain
-normalized absolute joint targets, with arm joints in [-1,1] and gripper in
-[0,1].
+train split, and are stored in the joint checkpoint. The active dataset uses
+fixed chunk-start offsets for five arm joints and an absolute gripper. The
+generator also supports absolute-joint targets. In both modes inference returns
+absolute commands after reversing normalization and, for delta mode, adding
+the observed anchor. Arm limits map to [-1,1]; gripper maps to [0,1].
 
 At 25 Hz, sample history endpoints every ten frames. Context minibatches
 forward TCOW alone and train masks; action minibatches train action and mask
 loss together. Closed loop executes ten of the 25 predicted actions and
 recomputes TCOW context from the first query frame through the current frame.
+The 30 input indices are `round(linspace(0, t, 30))`, spanning the whole prefix;
+they are not a sliding window of 30 consecutive 25 Hz frames. Hidden features
+are recomputed at each replan rather than carried between calls.
 
 ## Prepare weights
 
@@ -69,7 +77,7 @@ The tested TCOW revision is `a72e3e13a45e4156137328e5290f9e848d360367`.
 
 ```bash
 .venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.download_action_expert \
-  --output memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001
+  --output memory_occlusion/checkpoints/memory_occlusion_action_expert_init
 ```
 
 This validates the pinned Hub checkpoint checksum and exports only the needed
@@ -78,19 +86,28 @@ VLM checkpoint. A failed network transfer can be resumed with `--resume-download
 
 ## Train
 
+Example for the prepared persistent volume (run inside `huy` tmux with a fresh
+output directory):
+
 ```bash
-.venv/bin/python -m memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context \
-  --data memory_occlusion/datasets/memory_occlusion_multiview_25hz_v1 \
-  --weights memory_occlusion/checkpoints/tcow_rgbd_pretrained_joint1200_20260930.pth \
-  --config-checkpoint /path/to/tcow_upstream_config_checkpoint.pth \
-  --flow-weights memory_occlusion/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors \
-  --output memory_occlusion/checkpoints/tcow_dense_action_expert \
-  --wrist-camera --device mps --batch-size 1 --cluster-size 2 --epochs 1
+source /workspace/arm-manipulation/memory_occlusion/runtime/activate.sh
+set -o pipefail
+CUDA_VISIBLE_DEVICES=0 taskset -c 0-7 python \
+  -m memory_occlusion.experiments.tcow_joint_flow.train_from_tcow_context \
+  --data /workspace/memory_occlusion/datasets/memory_occlusion_multiview_25hz_delta_v1 \
+  --weights /workspace/memory_occlusion/checkpoints/memory_occlusion_tracker_init/checkpoint.pth \
+  --config-checkpoint /workspace/memory_occlusion/checkpoints/memory_occlusion_tracker_init/config.pt \
+  --flow-weights /workspace/memory_occlusion/checkpoints/memory_occlusion_action_expert_init/expert.safetensors \
+  --output /workspace/memory_occlusion/checkpoints/memory_occlusion_joint_1ep \
+  --wrist-camera --device cuda --batch-size 1 --cluster-size 2 --epochs 1 \
+  2>&1 | tee /workspace/memory_occlusion/logs/memory_occlusion_joint_1ep.log
 ```
 
-On the server, `train_from_tcow_context_server.sh` supplies the dataset and
-checkpoint paths. Select one GPU, a fresh `RUN_NAME`, and an explicit epoch
-budget. Stream the command through `tee` in the `huy` tmux session.
+TCOW and the action expert initialize from original pretrained weights. The
+config checkpoint supplies architecture/loss settings only. See
+[runtime inputs](../../runtime/README.md) for provenance. On Apple MPS, use
+the local `.venv`, local artifact paths, `--device mps`, and omit the Linux
+`taskset` command. Adding `--flow-only` freezes TCOW and drops mask loss.
 
 ## Smoke and evaluate
 
@@ -134,7 +151,9 @@ After that smoke passes, omit `--max-clusters` and `--smoke-steps`, select a new
 Rank zero decodes each eight-episode cluster once into temporary shared RAM
 buffers under `/dev/shm/<RUN_NAME>` and prefetches the next cluster. All ranks
 map those buffers; completed clusters are released after synchronization.
-Shared buffers are capped at 48 GiB, leaving RAM for the model and decoder.
+The DDP loader runs in a separate process, packs binary mask arrays and retains
+only the sampled wrist frames. Shared buffers are capped at 28 GiB, leaving
+RAM for the model and decoder.
 CPU affinity must cap the entire job to eight cores. Do not start if total RAM
 or any selected GPU's memory exceeds the experiment limits.
 
