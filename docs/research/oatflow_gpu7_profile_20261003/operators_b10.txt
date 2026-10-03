@@ -1,0 +1,41 @@
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  Total GFLOPs  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                          joint_forward         0.00%       0.000us         0.00%       0.000us       0.000us     985.239ms        27.58%     985.239ms     985.239ms             1            --  
+                                            aten::copy_         0.39%      21.177ms        15.82%     851.862ms     250.180us     759.768ms        21.27%     764.729ms     224.590us          3405            --  
+                                               aten::mm         0.31%      16.700ms         4.30%     231.441ms     343.895us     553.881ms        15.51%     555.767ms     825.805us           673     45473.402  
+                                            aten::addmm         0.30%      16.146ms         1.43%      77.163ms     280.593us     538.318ms        15.07%     543.813ms       1.978ms           275     44724.620  
+ampere_bf16_s16816gemm_bf16_256x128_ldg8_relu_f2f_st...         0.00%       0.000us         0.00%       0.000us       0.000us     527.792ms        14.78%     527.792ms       2.763ms           191            --  
+                                              aten::bmm         0.21%      11.087ms         1.18%      63.302ms     219.800us     283.298ms         7.93%     285.169ms     990.169us           288      4643.140  
+                                    Command Buffer Full        40.84%        2.199s        40.84%        2.199s       1.054ms     271.745ms         7.61%     271.745ms     130.208us          2087            --  
+ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_...         0.00%       0.000us         0.00%       0.000us       0.000us     248.254ms         6.95%     248.254ms       2.921ms            85            --  
+                                              aten::mul         0.30%      16.364ms         3.15%     169.340ms     126.562us     226.602ms         6.34%     229.100ms     171.226us          1338        26.327  
+void at::native::elementwise_kernel<128, 4, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us     221.953ms         6.21%     221.953ms     426.833us           520            --  
+void at::native::vectorized_elementwise_kernel<8, at...         0.00%       0.000us         0.00%       0.000us       0.000us     195.121ms         5.46%     195.121ms     158.893us          1228            --  
+void at::native::unrolled_elementwise_kernel<at::nat...         0.00%       0.000us         0.00%       0.000us       0.000us     165.190ms         4.62%     165.190ms     205.205us           805            --  
+                                             aten::add_         0.09%       4.597ms         1.81%      97.297ms      78.025us     161.608ms         4.52%     161.608ms     129.598us          1247            --  
+void cutlass::Kernel2<cutlass_80_tensorop_bf16_s1681...         0.00%       0.000us         0.00%       0.000us       0.000us     148.530ms         4.16%     148.530ms       6.189ms            24            --  
+void cutlass::Kernel2<cutlass_75_tensorop_bf16_s1688...         0.00%       0.000us         0.00%       0.000us       0.000us     135.590ms         3.80%     135.590ms       1.412ms            96            --  
+                                         aten::_softmax         0.03%       1.791ms         0.19%      10.075ms     139.926us     106.490ms         2.98%     107.632ms       1.495ms            72            --  
+                                            aten::fill_         0.04%       2.265ms         3.23%     173.960ms     399.909us      99.911ms         2.80%      99.928ms     229.720us           435            --  
+                         Memcpy DtoD (Device -> Device)         0.00%       0.000us         0.00%       0.000us       0.000us      97.007ms         2.72%      97.007ms     346.454us           280            --  
+void (anonymous namespace)::softmax_warp_forward<flo...         0.00%       0.000us         0.00%       0.000us       0.000us      96.816ms         2.71%      96.816ms       2.017ms            48            --  
+void at::native::vectorized_elementwise_kernel<8, at...         0.00%       0.000us         0.00%       0.000us       0.000us      96.438ms         2.70%      96.438ms     651.608us           148            --  
+                       aten::native_layer_norm_backward         0.02%       1.029ms         0.48%      25.893ms     410.993us      95.674ms         2.68%      95.741ms       1.520ms            63            --  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      91.347ms         2.56%      91.347ms     463.692us           197            --  
+         ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_nt         0.00%       0.000us         0.00%       0.000us       0.000us      84.220ms         2.36%      84.220ms       3.509ms            24            --  
+                                              aten::add         0.08%       4.477ms         2.59%     139.668ms     444.803us      80.099ms         2.24%      80.798ms     257.317us           314         5.320  
+void at::native::vectorized_elementwise_kernel<8, at...         0.00%       0.000us         0.00%       0.000us       0.000us      79.641ms         2.23%      79.641ms     737.421us           108            --  
+                           aten::_softmax_backward_data         0.01%     676.133us         0.21%      11.500ms     319.448us      78.785ms         2.21%     158.170ms       4.394ms            36            --  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us      77.575ms         2.17%      77.575ms     520.637us           149            --  
+                                aten::native_layer_norm         0.13%       6.947ms         0.66%      35.495ms     288.581us      73.426ms         2.06%      74.083ms     602.301us           123            --  
+void at::native::(anonymous namespace)::vectorized_l...         0.00%       0.000us         0.00%       0.000us       0.000us      73.426ms         2.06%      73.426ms     596.963us           123            --  
+void (anonymous namespace)::softmax_warp_backward<fl...         0.00%       0.000us         0.00%       0.000us       0.000us      72.007ms         2.02%      72.007ms       3.000ms            24            --  
+                                 aten::_index_put_impl_         0.01%     754.870us         1.77%      95.354ms       2.167ms      68.422ms         1.92%     114.681ms       2.606ms            44            --  
+void at::native::(anonymous namespace)::layer_norm_g...         0.00%       0.000us         0.00%       0.000us       0.000us      65.794ms         1.84%      65.794ms       1.044ms            63            --  
+                                              aten::cat         0.05%       2.739ms         0.54%      29.092ms     200.637us      65.460ms         1.83%      65.989ms     455.095us           145            --  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us      58.271ms         1.63%      58.271ms     149.414us           390            --  
+void at::native::vectorized_elementwise_kernel<8, at...         0.00%       0.000us         0.00%       0.000us       0.000us      54.673ms         1.53%      54.673ms     248.516us           220            --  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 5.384s
+Self CUDA time total: 3.572s

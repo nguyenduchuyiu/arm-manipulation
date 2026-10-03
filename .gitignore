@@ -17,6 +17,7 @@ MUJOCO_LOG.TXT
 assets/hope-dataset
 */docs
 */third_party
-memory_occlusion/datasets/
-memory_occlusion/checkpoints/
-memory_occlusion/experiments/*/results/
+OATFlow/datasets/
+OATFlow/checkpoints/
+OATFlow/experiments/*/results/
+OATFlow_tcow_25hz_240x320_v1

@@ -1,0 +1,82 @@
+{
+  "server": "vishc-server-2",
+  "physical_gpu": 7,
+  "gpu": "NVIDIA RTX A5000",
+  "precision": "BF16 autocast / FP32 parameters and loss",
+  "source_archive_sha256": "157845b77c695ef5b7fbfd5581de92b6bea8ded67efde128cb9cac42550317ba",
+  "training_updates": 18,
+  "timing_protocol": "one warmup + three synchronized timed joint-training steps per batch size; one additional profiled step each at B2 and B10",
+  "batch_results": [
+    {
+      "batch_size": 1,
+      "mean_step_s": 0.47877514408901334,
+      "samples_per_s": 2.0886631487579503,
+      "peak_allocated_gib": 5.65207576751709,
+      "peak_reserved_gib": 6.337890625
+    },
+    {
+      "batch_size": 2,
+      "mean_step_s": 0.8047040545692047,
+      "samples_per_s": 2.4853857621864384,
+      "peak_allocated_gib": 6.710540294647217,
+      "peak_reserved_gib": 7.935546875
+    },
+    {
+      "batch_size": 4,
+      "mean_step_s": 1.509674555932482,
+      "samples_per_s": 2.649577675056805,
+      "peak_allocated_gib": 9.045424938201904,
+      "peak_reserved_gib": 10.986328125
+    },
+    {
+      "batch_size": 10,
+      "mean_step_s": 3.553771953253696,
+      "samples_per_s": 2.813911565384601,
+      "peak_allocated_gib": 16.029654502868652,
+      "peak_reserved_gib": 19.515625
+    }
+  ],
+  "b10_kernel_categories": [
+    {
+      "name": "elementwise (includes casts / copies / pointwise)",
+      "cuda_ms": 1408.3264390000031,
+      "fraction": 0.39426833875297324
+    },
+    {
+      "name": "GEMM / matrix multiplication",
+      "cuda_ms": 1402.8305159999998,
+      "fraction": 0.39272972641770804
+    },
+    {
+      "name": "other",
+      "cuda_ms": 338.09506999999974,
+      "fraction": 0.09465147986863137
+    },
+    {
+      "name": "softmax",
+      "cuda_ms": 185.275222,
+      "fraction": 0.051868765626453005
+    },
+    {
+      "name": "layer normalization",
+      "cuda_ms": 139.22069699999997,
+      "fraction": 0.03897556092548861
+    },
+    {
+      "name": "device memory copy / set",
+      "cuda_ms": 98.25188599999996,
+      "fraction": 0.027506128408746295
+    }
+  ],
+  "b10_gpu_busy_fraction_profiled": 0.9824271445071896,
+  "b10_copy_operator_fraction": 0.21270093117557687,
+  "interpretation": "mixed workload with substantial memory movement / dtype conversion cost; evidence leans toward memory traffic, but DRAM bandwidth saturation is not established",
+  "limitations": [
+    "Nsight Compute ERR_NVGPUCTRPERM prevents SM/DRAM throughput counters",
+    "resident real action minibatches from one train episode; excludes data preparation, decode and DDP",
+    "kernel categories inferred from kernel names; elementwise category includes dtype copies and arithmetic",
+    "PyTorch trace collected separately from synchronized timing; profiling adds overhead"
+  ],
+  "server_artifacts": "/mnt/disk1/backup_user/25thanh.tk/memory_occlusion/scratch/memory_occlusion_gpu7_profile_20261003_1101",
+  "peak_cpu_rss_gib": 3.7240524291992188
+}
