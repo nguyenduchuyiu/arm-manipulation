@@ -12,7 +12,7 @@ shared_cache="/dev/shm/$RUN_NAME"
 trainer_pid=
 cleanup() {
   if [[ -n "$trainer_pid" ]] && kill -0 "$trainer_pid" 2>/dev/null; then
-    kill -TERM "$trainer_pid"
+    kill -TERM -- "-$trainer_pid"
     wait "$trainer_pid" || true
   fi
   rm -rf -- "$shared_cache"
@@ -24,7 +24,7 @@ IFS=, read -ra selected_gpus <<< "$CUDA_VISIBLE_DEVICES"
 gpu_count=${#selected_gpus[@]}
 (( gpu_count >= 2 && gpu_count <= 3 ))
 export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 PYTHONUNBUFFERED=1
-"$python" -m torch.distributed.run --standalone --nnodes=1 \
+setsid "$python" -m torch.distributed.run --standalone --nnodes=1 \
   --nproc_per_node="$gpu_count" --module memory_occlusion.experiments.tcow_joint_flow.train_distributed \
   --data "$output_base/datasets/memory_occlusion_multiview_25hz_delta_v1" \
   --weights "$source_base/checkpoints/tcow_published_kubric/checkpoint.pth" \
