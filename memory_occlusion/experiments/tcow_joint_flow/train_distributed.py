@@ -52,14 +52,14 @@ def cache_cluster(data_root, rows, destination, flow_only=False, require_wrist=F
         nonlocal occupied
         index, row = item
         episode = (load_policy_episode if flow_only else load_joint_episode)(
-            data_root / row["path"], require_wrist=require_wrist)
+            data_root / row["path"], require_wrist=require_wrist, training_cache=True)
         arrays, scalars = {}, {}
         for key, value in episode.items():
             if isinstance(value, np.ndarray):
                 with lock:
                     occupied += value.nbytes
-                    if occupied > 48 * 2**30:
-                        raise MemoryError("shared episode buffers exceed 48 GiB; reduce cluster size")
+                    if occupied > 28 * 2**30:
+                        raise MemoryError("shared episode buffers exceed 28 GiB; reduce cluster size")
                 path = destination / f"{index}_{key}.npy"
                 mapped = np.lib.format.open_memmap(path, mode="w+", dtype=value.dtype, shape=value.shape)
                 mapped[:] = value

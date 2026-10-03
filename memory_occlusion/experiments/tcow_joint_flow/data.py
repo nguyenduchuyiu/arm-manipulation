@@ -36,6 +36,23 @@ def require_wrist_data(root, rows):
             raise FileNotFoundError(f"missing wrist video; collect synchronized multiview data: {path}")
 
 
+def read_rgb(path, count, resolution, frames=None):
+    """Decode directly into one allocation; optionally retain only sampled frames."""
+    selected = np.arange(count) if frames is None else frames
+    result = np.empty((len(selected), *resolution, 3), dtype=np.uint8)
+    kept = decoded = 0
+    for index, frame in enumerate(iio.imiter(path, plugin="pyav", thread_count=2, thread_type="FRAME")):
+        if index >= count or frame.shape != (*resolution, 3) or frame.dtype != np.uint8:
+            raise ValueError(f"video frames disagree with metadata: {path}")
+        if kept < len(selected) and index == selected[kept]:
+            result[kept] = frame
+            kept += 1
+        decoded += 1
+    if decoded != count or kept != len(selected):
+        raise ValueError(f"video frames disagree with metadata: {path}")
+    return result
+
+
 def policy_statistics(root, rows):
     """Mean/std on valid TRAIN action frames, without decoding RGB or depth."""
     if (root / "normalization.json").is_file():
@@ -74,7 +91,7 @@ def load_episode(path: Path):
     meta = json.loads((path / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
         raise ValueError(f"expected 25 Hz 240x320: {path}")
-    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
+    rgb = read_rgb(path / "rgb.mp4", meta["frames"], (240, 320))
     with np.load(path / "observation.npz") as z:
         depth = z["depth_m"]
         proprio = z["joint_position"]
@@ -112,12 +129,12 @@ def clip(episode, end: int, device: str):
     return rgbd, query, masks, proprio, action
 
 
-def load_policy_episode(path: Path, require_wrist=False):
+def load_policy_episode(path: Path, require_wrist=False, training_cache=False):
     """Load 25 Hz policy data without the large three-mask supervision array."""
     meta = json.loads((path / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
         raise ValueError(f"expected 25 Hz 240x320: {path}")
-    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
+    rgb = read_rgb(path / "rgb.mp4", meta["frames"], (240, 320))
     with np.load(path / "observation.npz") as z:
         depth = z["depth_m"]
         proprio = z["joint_position"]
@@ -142,10 +159,12 @@ def load_policy_episode(path: Path, require_wrist=False):
         wrist_meta = meta.get("wrist_camera")
         if wrist_meta is None or wrist_meta["fps"] != 25 or wrist_meta["resolution"] != [320, 320]:
             raise ValueError(f"missing synchronized 25 Hz wrist camera metadata: {path}")
-        wrist = np.stack(list(iio.imiter(path / "wrist_rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
-        if wrist.shape != (n, 320, 320, 3) or wrist_meta["frames"] != n:
+        if wrist_meta["frames"] != n:
             raise ValueError(f"wrist frames disagree with overview: {path}")
-        episode["wrist_rgb"] = wrist
+        frames = np.array([end for end, _ in training_samples(episode)]) if training_cache else None
+        episode["wrist_rgb"] = read_rgb(path / "wrist_rgb.mp4", n, (320, 320), frames)
+        if training_cache:
+            episode["wrist_frames"] = frames
     if (path / "relative_actions.npz").is_file():
         with np.load(path / "relative_actions.npz") as z:
             episode.update(relative_action=z["action"], relative_starts=z["starts"],
@@ -173,20 +192,30 @@ def policy_clip(episode, end: int, device: str):
     return rgbd, query, proprio, action
 
 
-def load_joint_episode(path: Path, require_wrist=False):
-    episode = load_policy_episode(path, require_wrist=require_wrist)
+def load_joint_episode(path: Path, require_wrist=False, training_cache=False):
+    episode = load_policy_episode(path, require_wrist=require_wrist, training_cache=training_cache)
     with np.load(path / "tcow_labels.npz") as z:
-        episode["mask"] = z["mask"]
-    if len(episode["mask"]) != len(episode["rgb"]):
+        masks = z["mask"]
+    if len(masks) != len(episode["rgb"]):
         raise ValueError(f"TCOW labels disagree with RGB: {path}")
+    if training_cache:
+        if masks.dtype != np.bool_:
+            raise ValueError(f"expected binary TCOW masks: {path}")
+        episode["mask_packed"] = np.packbits(masks, axis=-1)
+    else:
+        episode["mask"] = masks
     return episode
 
 
 def joint_clip(episode, end: int, device: str):
     rgbd, query, proprio, action = policy_clip(episode, end, device)
     indices = np.rint(np.linspace(0, end, 30)).astype(np.int64)
-    masks = (torch.from_numpy(episode["mask"][indices].copy()).permute(1, 0, 2, 3)[None]
-             if "mask" in episode else torch.zeros((1, 3, 30, 1, 1)))
+    if "mask_packed" in episode:
+        masks = torch.from_numpy(np.unpackbits(episode["mask_packed"][indices], axis=-1, count=320))
+        masks = masks.permute(1, 0, 2, 3)[None]
+    else:
+        masks = (torch.from_numpy(episode["mask"][indices].copy()).permute(1, 0, 2, 3)[None]
+                 if "mask" in episode else torch.zeros((1, 3, 30, 1, 1)))
     action_frames = torch.from_numpy((indices >= episode["events"][0]).copy())[None]
     return rgbd, query, masks.float().to(device), proprio, action, action_frames.to(device)
 
@@ -239,5 +268,10 @@ def training_clip(episode, end: int, has_action: bool, device: str, include_wris
     result = (rgbd, query, masks, proprio, action, valid_steps)
     if include_wrist:
         from memory_occlusion.experiments.tcow_joint_flow.wrist import wrist_tensor
-        result += (wrist_tensor(episode["wrist_rgb"][end], device),)
+        index = end
+        if "wrist_frames" in episode:
+            index = int(np.searchsorted(episode["wrist_frames"], end))
+            if index >= len(episode["wrist_frames"]) or episode["wrist_frames"][index] != end:
+                raise ValueError(f"missing wrist frame: {episode['name']}, {end}")
+        result += (wrist_tensor(episode["wrist_rgb"][index], device),)
     return result
