@@ -4,6 +4,7 @@ export UV_PYTHON_INSTALL_DIR=/workspace/memory_occlusion/runtime/python
 export HF_HOME=/workspace/memory_occlusion/cache/huggingface
 export TORCH_HOME=/workspace/memory_occlusion/cache/torch
 export MPLCONFIGDIR=/workspace/memory_occlusion/cache/matplotlib
+export RCLONE_CONFIG=/workspace/memory_occlusion/runtime/drive/rclone.conf
 export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export PATH="/workspace/memory_occlusion/runtime/bin:$PATH"
