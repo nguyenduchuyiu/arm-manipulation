@@ -286,12 +286,18 @@ def main():
                         required = values if is_action else values[:2]
                         if not args.flow_only and any(v is None or not np.isfinite(v) or v <= 0 for v in required):
                             raise AssertionError(f"missing or nonfinite gradients on rank {rank}")
+                        wrist_grad = model.flow.wrist_encoder.patch.weight.grad if args.wrist_camera else None
+                        wrist_value = float(wrist_grad.float().abs().sum()) if wrist_grad is not None else None
+                        if args.wrist_camera and is_action and (wrist_value is None or not np.isfinite(wrist_value) or wrist_value <= 0):
+                            raise AssertionError(f"missing or nonfinite wrist gradient on rank {rank}")
+                        if not is_action and wrist_grad is not None:
+                            raise AssertionError("mask-only batch created wrist gradients")
                         if rank == 0:
                             print(json.dumps({"event": "gradient_smoke", "action_phase": is_action,
                                               "latent_shape": list(latent.shape),
                                               "context_shape": list(context.shape) if context is not None else None,
                                               "patch_grad": values[0], "mask_head_grad": values[1],
-                                              "flow_grad": values[2]}), flush=True)
+                                              "flow_grad": values[2], "wrist_grad": wrist_value}), flush=True)
                         checked_phases.add(is_action)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
                                                    error_if_nonfinite=True)

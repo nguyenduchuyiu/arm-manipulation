@@ -115,9 +115,17 @@ def load_training_tracker(seeker, source, flow_only):
                  if key.startswith("tcow.")}
         step = source["step"]
     else:
-        if source.get("input_channels") != 5:
-            raise ValueError("expected an RGB-D TCOW checkpoint")
-        state, step = source["net_seeker"], source["source_step"]
+        state, step = dict(source["net_seeker"]), source.get("source_step", 0)
+        key = "seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight"
+        patch = state[key]
+        if patch.shape[1] == 4:
+            # Preserve published RGB/query weights and initialize added depth to zero.
+            expanded = patch.new_zeros(patch.shape[0], 5, *patch.shape[2:])
+            expanded[:, :3] = patch[:, :3]
+            expanded[:, 4] = patch[:, 3]
+            state[key] = expanded
+        elif patch.shape[1] != 5:
+            raise ValueError("expected RGB+query or RGB-D+query TCOW weights")
     seeker.load_state_dict(state, strict=True)
     return step
 
