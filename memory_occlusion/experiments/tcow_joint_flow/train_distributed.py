@@ -1,9 +1,10 @@
 """Train the same joint policy with torchrun on up to three GPUs."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import timedelta
 import faulthandler
 import json
 import logging
+import multiprocessing
 import os
 from pathlib import Path
 import resource
@@ -211,7 +212,8 @@ def main():
     shared_root = Path("/dev/shm") / args.output.name
     if rank == 0:
         shared_root.mkdir(mode=0o700)
-    with ThreadPoolExecutor(max_workers=1) as loader:
+    # Video decoding must not share Python's interpreter lock with rank 0's training loop.
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as loader:
         future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only,
                                 args.wrist_camera)
                   if rank == 0 else None)
