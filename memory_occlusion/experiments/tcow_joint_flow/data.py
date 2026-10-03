@@ -74,7 +74,7 @@ def load_episode(path: Path):
     meta = json.loads((path / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
         raise ValueError(f"expected 25 Hz 240x320: {path}")
-    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav")))
+    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
     with np.load(path / "observation.npz") as z:
         depth = z["depth_m"]
         proprio = z["joint_position"]
@@ -117,7 +117,7 @@ def load_policy_episode(path: Path, require_wrist=False):
     meta = json.loads((path / "episode.json").read_text())
     if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
         raise ValueError(f"expected 25 Hz 240x320: {path}")
-    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav")))
+    rgb = np.stack(list(iio.imiter(path / "rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
     with np.load(path / "observation.npz") as z:
         depth = z["depth_m"]
         proprio = z["joint_position"]
@@ -142,7 +142,7 @@ def load_policy_episode(path: Path, require_wrist=False):
         wrist_meta = meta.get("wrist_camera")
         if wrist_meta is None or wrist_meta["fps"] != 25 or wrist_meta["resolution"] != [320, 320]:
             raise ValueError(f"missing synchronized 25 Hz wrist camera metadata: {path}")
-        wrist = np.stack(list(iio.imiter(path / "wrist_rgb.mp4", plugin="pyav")))
+        wrist = np.stack(list(iio.imiter(path / "wrist_rgb.mp4", plugin="pyav", thread_count=2, thread_type="FRAME")))
         if wrist.shape != (n, 320, 320, 3) or wrist_meta["frames"] != n:
             raise ValueError(f"wrist frames disagree with overview: {path}")
         episode["wrist_rgb"] = wrist

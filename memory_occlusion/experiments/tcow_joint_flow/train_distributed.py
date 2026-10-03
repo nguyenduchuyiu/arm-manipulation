@@ -11,6 +11,7 @@ import shutil
 import signal
 import sys
 import time
+from threading import Lock
 
 import numpy as np
 import torch
@@ -45,17 +46,20 @@ def cache_cluster(data_root, rows, destination, flow_only=False, require_wrist=F
     """Decode once into temporary RAM files that every rank can map."""
     destination.mkdir()
     occupied = sum(p.stat().st_size for p in destination.parent.rglob("*.npy"))
-    descriptors = []
-    for index, row in enumerate(tqdm(rows, desc="load shared episodes", unit="episode",
-                                     mininterval=5, file=sys.stdout)):
+    lock = Lock()
+
+    def cache_one(item):
+        nonlocal occupied
+        index, row = item
         episode = (load_policy_episode if flow_only else load_joint_episode)(
             data_root / row["path"], require_wrist=require_wrist)
         arrays, scalars = {}, {}
         for key, value in episode.items():
             if isinstance(value, np.ndarray):
-                occupied += value.nbytes
-                if occupied > 48 * 2**30:
-                    raise MemoryError("shared episode buffers exceed 48 GiB; reduce cluster size")
+                with lock:
+                    occupied += value.nbytes
+                    if occupied > 48 * 2**30:
+                        raise MemoryError("shared episode buffers exceed 48 GiB; reduce cluster size")
                 path = destination / f"{index}_{key}.npy"
                 mapped = np.lib.format.open_memmap(path, mode="w+", dtype=value.dtype, shape=value.shape)
                 mapped[:] = value
@@ -64,8 +68,12 @@ def cache_cluster(data_root, rows, destination, flow_only=False, require_wrist=F
                 arrays[key] = str(path)
             else:
                 scalars[key] = value
-        descriptors.append((row, scalars, arrays))
-        del episode
+        return row, scalars, arrays
+
+    with ThreadPoolExecutor(max_workers=min(4, len(rows))) as decoders:
+        descriptors = list(tqdm(decoders.map(cache_one, enumerate(rows)), total=len(rows),
+                                desc="load shared episodes", unit="episode", mininterval=5,
+                                file=sys.stdout))
     tqdm.write(json.dumps({"event": "shared_cluster_ready", "episodes": len(rows),
                            "shared_buffers_gib": occupied / 2**30}), file=sys.stdout)
     return descriptors
