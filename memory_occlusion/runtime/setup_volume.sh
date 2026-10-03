@@ -10,7 +10,7 @@ if [[ ! -x "$runtime/bin/uv" ]]; then
 fi
 export UV_CACHE_DIR=/workspace/memory_occlusion/cache/uv
 export UV_PYTHON_INSTALL_DIR="$runtime/python"
-export UV_CONCURRENT_INSTALLS=2 UV_CONCURRENT_BUILDS=1
+export UV_CONCURRENT_DOWNLOADS=2 UV_CONCURRENT_INSTALLS=2 UV_CONCURRENT_BUILDS=1
 uv="$runtime/bin/uv"
 "$uv" python install 3.12.3
 if [[ ! -d "$runtime/.venv" ]]; then
