@@ -228,15 +228,18 @@ To collect extra demonstrations in the same command, add `--extra-demos 3`
 with `--action-mode delta` or `--action-mode ee`. The default `--extra-demos 0` collects only the
 original demonstrations; `2` requests exactly two successful extras per train
 sample, while `3` requests up to three and requires at least two. TCOW labels
-are enabled automatically. After collecting, auditing and normalizing the
-base dataset, the generator runs continuous expert-plus-joint perturbation
-from shuffle end, with physical grasp/placement retries. Labels are the
+are enabled automatically. Each worker collects one expert episode, validates
+it, then immediately collects that sample's extra demonstrations before starting
+another sample. There is no separate augmentation pass when generating new data.
+Extra rollouts run continuous expert-plus-joint perturbation from shuffle end,
+with physical grasp/placement retries. Labels are the
 actually executed commands (type 2), and each demo retains its own full
 RGB/wrist/proprio history and H25 joint/EE-delta chunks at stride 10.
 
 Successful extras are attached under each train episode's `demos/a01`–`a03`
 and indexed in `demonstrations.json`; the existing training loaders consume
-them automatically. Validation/test episodes are retained; normalization is fitted on the original
+them automatically. Validation/test episodes receive no extra demonstrations.
+After full dataset audit, normalization is fitted once on the original
 and extra standard/train demonstrations together. Fewer than two successful extras after 12 trials causes a
 reported shortfall and nonzero exit. Configuration, README and results are
 written beside the data, with augmentation progress in

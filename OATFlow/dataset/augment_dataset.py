@@ -91,10 +91,10 @@ def attach(parent, entries):
     write_json(parent / "demonstrations.json", {"version": 1, "demonstrations": entries})
 
 
-def collect_scene(job, maximum=MAX_DEMOS):
+def collect_scene(job, maximum, action_mode):
     root, row, output = job
-    representation = json.loads((root / "normalization.json").read_text())["action_representation"]
-    action_mode = {"relative_joint": "delta", "relative_ee": "ee"}[representation]
+    if action_mode not in ("delta", "ee"):
+        raise ValueError("extra demonstrations require delta or ee actions")
     parent = root / row["path"]
     meta = json.loads((parent / "episode.json").read_text())
     state_path = output / "scenes" / (parent.name + ".json")
@@ -247,7 +247,8 @@ def augment_rows(root, rows, output, workers=4, extra_demos=MAX_DEMOS, resume=Fa
             tqdm(total=len(rows), desc="augment train samples", unit="sample", mininterval=5, file=sys.stdout) as progress:
         # Bound queued work: unexpected errors stop collection after the active batch.
         for offset in range(0, len(rows), workers):
-            futures = [pool.submit(collect_scene, (root, row, output), extra_demos)
+            futures = [pool.submit(collect_scene, (root, row, output), extra_demos,
+                                   {"relative_joint": "delta", "relative_ee": "ee"}[representation])
                        for row in rows[offset:offset + workers]]
             for future in as_completed(futures):
                 result = future.result()

@@ -1,4 +1,4 @@
-"""Collect 25 Hz multiview episodes, audit, finalize actions, optionally add perturbed demos."""
+"""Collect each expert with its extra demos, audit, then finalize actions and normalization."""
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 
 from OATFlow.environment.env import TARGETS
 from OATFlow.dataset.actions import finalize_actions
-from OATFlow.dataset.augment_dataset import augment_rows
+from OATFlow.dataset.augment_dataset import collect_scene, PROFILES, SETTINGS, MAX_TRIALS, MIN_DEMOS
 from OATFlow.dataset.audit_tcow_dataset import audit
 from OATFlow.dataset.episode import generate
 from OATFlow.dataset.references import create_references
@@ -20,9 +20,17 @@ from OATFlow.policy.data import expand_demonstrations
 
 
 def _generate_one(job):
-    output, seed, target, swaps, layout, tcow_labels = job
-    return generate(output, seed, target, swaps, previews=False, layout=layout,
-                    tcow_labels=tcow_labels)
+    root, output, seed, target, swaps, layout, tcow_labels, group, extra_demos, action_mode = job
+    result = generate(output, seed, target, swaps, previews=False, layout=layout,
+                      tcow_labels=tcow_labels)
+    parent = output / f"episode_{result['seed']:06d}_{result['target_object_id']}"
+    row = dict(path=str(parent.relative_to(root)), seed=result["seed"],
+               split=result["split"], group=group)
+    extra = None
+    if extra_demos and group == "standard" and result["split"] == "train":
+        validate(parent)
+        extra = collect_scene((root, row, root / "augmentation"), extra_demos, action_mode)
+    return result, row, extra
 
 
 def main():
@@ -71,32 +79,53 @@ def main():
                    "Training/weights/epochs/batch/LR/inference: not run.\n"
                    "Test: episode alignment, scene/split audit, fixed-anchor joint/EE H25 at stride10.\n"
                    "Extra demos use continuous actuator perturbation, executed-action labels, independent histories.\n"
+                   "Each worker collects an expert and its extras together; normalization runs once after all demos.\n"
                    "Failed rollouts excluded; validation/test receive no extra demos; normalize all valid train demos.\n"
                    "Config: collection.json; dataset.json; augmentation/config.json when enabled. Status: collecting.\n")
     (args.output / "README.md").write_text(description)
     if args.plan:
         (args.output / "plan.jsonl").write_text(plan_text)
+    if args.extra_demos:
+        augmentation = args.output / "augmentation"
+        augmentation.mkdir()
+        for name in ("scenes", "scene_logs", "failed"):
+            (augmentation / name).mkdir()
+        config = dict(data=str(args.output), action_mode=args.action_mode, minimum_extra=MIN_DEMOS,
+                      maximum_extra=args.extra_demos, maximum_trials=MAX_TRIALS,
+                      settings=SETTINGS, profiles=PROFILES, workers=args.workers,
+                      schedule="mild/medium/strong, then alternating mild/medium",
+                      horizon=25, stride=10, fps=25,
+                      collection="expert_then_extras_per_worker", normalization="after_all_demonstrations")
+        (augmentation / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+        (augmentation / "README.md").write_text(description)
     jobs = []
     for scene in plan:
         output = args.output / scene["group"]
         create_references(output)
-        jobs.extend((output, scene["seed"], target, scene["swaps"], scene["layout"], args.tcow_labels)
+        jobs.extend((args.output, output, scene["seed"], target, scene["swaps"], scene["layout"],
+                     args.tcow_labels, scene["group"] or "standard", args.extra_demos, args.action_mode)
                     for target in TARGETS)
     if not args.plan and not args.seed_file:
         jobs = jobs[:args.episodes]
     print(json.dumps({"event": "collection_start", "episodes": len(jobs), "workers": args.workers,
                       "action_mode": args.action_mode, "output": str(args.output)}), flush=True)
     rows = []
+    extras = []
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=get_context("spawn")) as pool:
         futures = {pool.submit(_generate_one, job): job for job in jobs}
         for future in tqdm(as_completed(futures), total=len(futures), desc="collect episodes",
                            unit="episode", mininterval=5, file=sys.stdout):
-            result = future.result()
-            output = futures[future][0]
+            result, row, extra = future.result()
+            output = futures[future][1]
             with (output / "index.jsonl").open("a") as stream:
                 stream.write(json.dumps(result) + "\n")
-            rows.append(dict(path=str((output / f"episode_{result['seed']:06d}_{result['target_object_id']}").relative_to(args.output)),
-                             seed=result["seed"], split=result["split"], group=output.name if args.plan else "standard"))
+            rows.append(row)
+            if extra is not None:
+                extras.append(extra)
+                augmented = dict(status="running", completed=len(extras),
+                                 added=sum(item["added"] for item in extras),
+                                 shortfalls=[item["path"] for item in extras if item["status"] == "shortfall"])
+                (augmentation / "summary.json").write_text(json.dumps(augmented, indent=2) + "\n")
             tqdm.write(f"completed seed={result['seed']} target={result['target_object_id']} frames={result['frames']}")
     print("Collection complete; auditing every episode.", flush=True)
     if args.plan:
@@ -107,17 +136,27 @@ def main():
                           total=len(rows), desc="audit episodes", unit="episode", file=sys.stdout):
                 pass
         (args.output / "manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
-    finalize_actions(args.output, rows, args.action_mode)
+    all_rows = rows
     summary = dict(episodes=len(rows), extra_demonstrations=0, status="complete")
     if args.extra_demos:
-        augmented = augment_rows(args.output, rows, args.output / "augmentation",
-                                 workers=min(args.workers, 4), extra_demos=args.extra_demos)
+        if not extras:
+            raise ValueError("no standard/train samples for extra demonstrations")
+        augmented.update(status="shortfall" if augmented["shortfalls"] else "complete",
+                         samples=len(extras), base_demonstrations=len(extras),
+                         failed_trials=sum(item["failed_trials"] for item in extras))
+        if augmented["shortfalls"]:
+            (augmentation / "summary.json").write_text(json.dumps(augmented, indent=2) + "\n")
+            raise RuntimeError(f"{len(augmented['shortfalls'])} samples have fewer than two extra demos")
         expanded = expand_demonstrations(args.output, [row for row in rows
                                        if row["group"] == "standard" and row["split"] == "train"])
         all_rows = expanded + [row for row in rows if row["group"] != "standard" or row["split"] != "train"]
-        finalize_actions(args.output, all_rows, args.action_mode)
+        augmented["demonstrations_per_epoch"] = len(expanded)
+        (augmentation / "summary.json").write_text(json.dumps(augmented, indent=2) + "\n")
+        (augmentation / "README.md").write_text(description.replace("Status: collecting", "Status: complete") +
+                                                "\n" + json.dumps(augmented, indent=2) + "\n")
         summary.update(extra_demonstrations=augmented["added"],
                        train_demonstrations_per_epoch=augmented["demonstrations_per_epoch"])
+    finalize_actions(args.output, all_rows, args.action_mode)
     (args.output / "generation_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     (args.output / "README.md").write_text(description.replace("Status: collecting", "Status: complete") +
                                          "\n" + json.dumps(summary, indent=2) + "\n")
