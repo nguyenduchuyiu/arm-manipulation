@@ -9,7 +9,7 @@ def mask_panel(rgb, masks, frame_index, source_frame, query_mask=None):
     panels = []
     for channel in range(4):
         panel = rgb.copy()
-        mask = query_mask if channel == 0 else masks[channel - 1]
+        mask = query_mask if channel == 0 else (None if masks is None else masks[channel - 1])
         if mask is not None:
             color = (255, 230, 0) if channel == 0 else colors[channel - 1]
             panel[mask] = np.rint(panel[mask] * .4 + np.asarray(color) * .6).astype(np.uint8)
@@ -24,11 +24,13 @@ def mask_panel(rgb, masks, frame_index, source_frame, query_mask=None):
             pixels = int(query_mask.sum()) if query_mask is not None else None
             text_color = (255, 230, 0) if query_mask is not None else (255, 255, 255)
         else:
-            pixels = int(masks[index - 1].sum())
-            text_color = colors[index - 1]
-        title = f"{label}  {pixels} px" if pixels is not None else label
+            pixels = int(masks[index - 1].sum()) if masks is not None else None
+            text_color = colors[index - 1] if masks is not None else (255, 255, 255)
+        title = (f"{label} (not computed)" if index and masks is None else
+                 f"{label}  {pixels} px" if pixels is not None else label)
         draw.text((left + 4, 3), title, fill=text_color)
     draw.rectangle((0, rgb.shape[0] - 17, width - 1, rgb.shape[0] - 1), fill=(0, 0, 0))
-    draw.text((4, rgb.shape[0] - 15), f"frame {frame_index} | TCOW source {source_frame}",
+    source = "scene context" if masks is None else f"TCOW source {source_frame}"
+    draw.text((4, rgb.shape[0] - 15), f"frame {frame_index} | {source}",
               fill=(255, 255, 255))
     return np.asarray(display)

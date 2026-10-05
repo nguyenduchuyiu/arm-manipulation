@@ -127,6 +127,14 @@ After making changes, report:
 3. How to run or test it.
 4. Any important limitation.
 
+## Experiment names and descriptions
+
+* Use short experiment names such as `e01_delta`, `e02_joint`, `e03_freeze`, and `e04_vit`. Use the next unused numeric ID for a new experiment; put dates and detailed settings in metadata rather than in the directory name. This user preference supersedes the older requirement to prefix every run with `memory_occlusion`.
+* Keep related tests under the experiment as `test_k10`, `test_k25`, etc.; use a short numeric suffix for repetitions and never overwrite earlier results. Keep run, log, and tmux names short and consistent.
+* Every experiment output folder, including a standalone test folder, must contain a short `README.md`: experiment purpose/change, actual training configuration (data, source weights, frozen/trainable modules, epochs, batch, learning rate, action representation), and actual test configuration (checkpoint/step, scenes, H/K, flow steps, noise seed, frame budget). Record status/results and link exact configuration files. Mark tests as planned, incomplete, or not run when applicable.
+* Prepare this README locally before launching a run, copy it beside the server artifacts once the trainer has created its fresh output directory, and update it after completion or interruption. Do not pre-create trainer output directories: current trainers reject existing outputs. Include the README when copying results locally. A small README beside server artifacts is required by the user; canonical research documentation remains local. Use `docs/research/EXPERIMENT_TEMPLATE.md` as a starting point.
+* Keep existing artifact paths intact when adding descriptions. Local bash scripts need not change; document launch commands in `OATFlow/policy/README.md` and adjust bash on the server when needed.
+
 ## Long running rule
 Dont read all logs but save it to a log file and grep if needed.
 For every long-running command in tmux, stream its main stdout and stderr to the tmux window while saving the same output to a log file (for example, `set -o pipefail; command 2>&1 | tee -a "$log_file"`). Do not redirect the only live output away from tmux. When several stages share a run, keep their current progress visible in a clearly named tmux window.

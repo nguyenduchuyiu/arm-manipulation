@@ -11,7 +11,8 @@ import numpy as np
 from PIL import Image, ImageDraw
 from tqdm.auto import tqdm
 
-from controllers.oracle_pick import pick
+from controllers.oracle_pick import GraspFailure, IKFailure, pick
+from OATFlow.dataset.perturbation import ContinuousPerturbation, RolloutFailure
 from OATFlow.task import normalized
 from OATFlow.environment.env import (COVER_XY, COVER_DROP_ZONE_XY,
                                   TARGET_DROP_ZONE_XY, TARGETS, MemoryOcclusionEnv, wrist_camera_metadata)
@@ -89,7 +90,7 @@ def context(env, plan, record):
     env.phase = "occlude"
 
 
-def execute(env, target, callback):
+def execute(env, target, callback, perturbation=None):
     env.query(target)
     cover = env.assignment[target]
     other_cover = next(name for name in env.cover_qadr if name != cover)
@@ -99,37 +100,73 @@ def execute(env, target, callback):
     def checked(stage):
         env._evaluate()
         if env.failure_reason:
-            raise RuntimeError(env.failure_reason)
+            raise RolloutFailure(env.failure_reason)
         callback(stage)
 
-    point = env.data.xpos[env.model.body(cover).id].copy()
-    point[2] += .130
-    cover_gain = pick(env.model, env.data, cover, point,
-                      place_xy=COVER_DROP_ZONE_XY, lift_height=.20, straight_lift=True,
-                      on_step=lambda stage: checked("cover_" + stage))
+    def attempt(key, body, destination, straight_lift=False):
+        attempts = perturbation.config["max_attempts"] if perturbation else 1
+        for number in range(1, attempts + 1):
+            point = env.data.xpos[env.model.body(body).id].copy()
+            if key == "cover":
+                point += (env.data.xmat[env.model.body(body).id].reshape(3, 3) @ (0., 0., .130)
+                          if perturbation else np.array((0., 0., .130)))
+            else:
+                point[2] += .015 if body == "Milk" else .010
+            if perturbation:
+                perturbation.scale = 1.0 if number == 1 else perturbation.config["retry_scale"]
+            event = {"body": body, "stage": key, "attempt": number,
+                     "start_frame": len(perturbation.trace) + perturbation.start_frame} if perturbation else {}
+            try:
+                gain = pick(env.model, env.data, body, point, place_xy=destination,
+                            lift_height=.20, straight_lift=straight_lift,
+                            on_step=lambda stage: checked(key + "_" + stage),
+                            perturb_command=(lambda stage, command: perturbation.apply(
+                                key + "_" + stage, command,
+                                perturbation.start_frame + len(perturbation.trace))) if perturbation else None)
+            except GraspFailure as error:
+                if not perturbation:
+                    raise
+                event.update(success=False, reason=str(error),
+                             end_frame=perturbation.start_frame + len(perturbation.trace))
+                perturbation.attempts.append(event)
+                if number == attempts:
+                    raise RolloutFailure(str(error)) from error
+                continue
+            if perturbation:
+                deposited = env._cover_in_drop_zone() if key == "cover" else env._target_in_drop_zone()
+                if not deposited:
+                    event.update(success=False, lift_gain_m=gain, reason="not deposited in drop zone",
+                                 end_frame=perturbation.start_frame + len(perturbation.trace))
+                    perturbation.attempts.append(event)
+                    if number == attempts:
+                        raise RolloutFailure(f"{body}: not deposited after {attempts} attempts")
+                    continue
+                event.update(success=True, lift_gain_m=gain,
+                             end_frame=perturbation.start_frame + len(perturbation.trace))
+                perturbation.attempts.append(event)
+            return gain
+
+    cover_gain = attempt("cover", cover, COVER_DROP_ZONE_XY, straight_lift=True)
     if not env._cover_in_drop_zone():
-        raise RuntimeError("cover was not deposited in its drop zone")
+        raise RolloutFailure("cover was not deposited in its drop zone")
     callback("t_obj")
-    point = env.data.xpos[env.model.body(target).id].copy()
-    point[2] += .015 if target == "Milk" else .010
-    target_gain = pick(env.model, env.data, target, point,
-                       place_xy=TARGET_DROP_ZONE_XY, lift_height=.20,
-                       on_step=lambda stage: checked("object_" + stage))
+    target_gain = attempt("object", target, TARGET_DROP_ZONE_XY)
     if not env._target_in_drop_zone():
-        raise RuntimeError("target was not deposited in its drop zone")
+        raise RolloutFailure("target was not deposited in its drop zone")
     if np.linalg.norm(env.data.xpos[env.model.body(other_cover).id][:2] - other_start[:2]) > .01:
-        raise RuntimeError("expert displaced the other cover")
+        raise RolloutFailure("expert displaced the other cover")
     env._evaluate()
     if not env.success:
-        raise RuntimeError("target was not held long enough before placement")
+        raise RolloutFailure("target was not held long enough before placement")
     return cover_gain, target_gain
 
 
 def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool = True,
-             layout: str = "standard", tcow_labels: bool = False):
+             layout: str = "standard", tcow_labels: bool = False,
+             control_perturbation=None, directory: Path | None = None):
     if target not in TARGETS or swaps not in (1, 2, 3):
         raise ValueError("use a HOPE target and one to three swaps")
-    directory = root / f"episode_{seed:06d}_{target}"
+    directory = directory if directory is not None else root / f"episode_{seed:06d}_{target}"
     directory.mkdir(parents=True, exist_ok=True)
     for filename in ("episode.json", "input.json"):
         (directory / filename).unlink(missing_ok=True)
@@ -152,7 +189,8 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         cover_only.geomgroup[4] = 1
     top = 40 if tcow_labels else 0
     height = 240 if tcow_labels else 320
-    depth, masks, entities, proprio, actions, valid, phases, poses, times = [], [], [], [], [], [], [], [], []
+    masks, entities, proprio, actions, valid, phases, poses, times = [], [], [], [], [], [], [], []
+    oracle_actions, executed_actions = [], []
     tcow_masks = []
     qpos_frames = []
     limits = env.model.actuator_ctrlrange.copy()
@@ -164,6 +202,8 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
     grasp_start_z = {}
     semantic_entity = 2  # target until it is fully hidden
     transitions = {}
+    perturbation = (ContinuousPerturbation(control_perturbation, limits)
+                    if control_perturbation is not None else None)
     def video_writer(name):
         writer = iio.imopen(directory / name, "w", plugin="pyav")
         writer.init_video_stream("libx264", fps=FPS, pixel_format="yuv420p")
@@ -172,26 +212,24 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
     rgb_writer = video_writer("rgb.mp4")
     wrist_writer = video_writer("wrist_rgb.mp4")
     mask_writer = video_writer("mask_preview.mp4") if previews else None
-    depth_writer = video_writer("depth_preview.mp4") if previews else None
     progress = tqdm(desc=f"collect {directory.name}", unit="frame", mininterval=5, file=sys.stdout)
 
     def record(phase, action_valid=True):
         nonlocal semantic_entity
         # All saved poses and both camera views refer to the same current state.
         mujoco.mj_forward(env.model, env.data)
-        rgb_full, depth_full = env._overview()
+        rgb_full = env._overview()
         seg_full = env.segmentation()
         target_visible_full = seg_full[:, :, 0] == target_geom
-        index = len(depth)
+        index = len(times)
         if phase == "occlude" and semantic_entity == 2 and not target_visible_full.any():
             semantic_entity = 1
             transitions["fully_occluded"] = index
-        if phase == "cover_retreat" and semantic_entity == 1:
-            if not target_visible_full.any():
-                raise RuntimeError("cover released but target is still invisible")
+        if phase in ("cover_retreat", "cover_home") and semantic_entity == 1 and (
+                target_visible_full.any() and env._cover_in_drop_zone()):
             semantic_entity = 2
             transitions["cover_released"] = index
-        if phase == "object_retreat" and semantic_entity == 2:
+        if phase in ("object_retreat", "object_home") and semantic_entity == 2 and env._target_in_drop_zone():
             semantic_entity = 0
             transitions["object_released"] = index
         if phase in ("shuffle", "hold"):
@@ -199,7 +237,6 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
             if np.any(np.isin(seg_full[:, :, 0], ids)):
                 raise RuntimeError("an object became visible during shuffle/hold")
         rgb = rgb_full[top:top + height]
-        d = depth_full[top:top + height]
         seg = seg_full[top:top + height]
         target_visible = target_visible_full[top:top + height]
         mask = np.zeros((height, 320), dtype=np.uint8)
@@ -232,8 +269,6 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         rgb_writer.write(rgb, is_batch=False)
         wrist_writer.write(env.wrist_image(), is_batch=False)
         if previews:
-            depth_gray = (255 * (1 - np.clip((d - .4) / 1.2, 0, 1))).astype(np.uint8)
-            depth_writer.write(np.repeat(depth_gray[:, :, None], 3, axis=2), is_batch=False)
             overlay = rgb.copy()
             overlay[mask == 1] = (overlay[mask == 1] * .4 + np.array((30, 100, 255)) * .6).astype(np.uint8)
             overlay[mask == 2] = (overlay[mask == 2] * .4 + np.array((255, 220, 0)) * .6).astype(np.uint8)
@@ -244,24 +279,30 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
             draw.rectangle((0, 0, 319, 20), fill=(0, 0, 0))
             draw.text((5, 4), f"{index / FPS:.2f}s  {label}", fill=(255, 255, 255))
             mask_writer.write(np.asarray(preview), is_batch=False)
-        depth.append(d)
         masks.append(mask)
         entities.append(semantic_entity)
         proprio.append(normalized(env.data.qpos[env.robot_qpos_addresses], limits))
-        actions.append(normalized(env.data.ctrl, limits))
+        if perturbation:
+            oracle = perturbation.trace[-1]["expert_ctrl"] if action_valid else env.data.ctrl
+            oracle_actions.append(normalized(oracle, limits))
+            executed_actions.append(normalized(env.data.ctrl, limits))
+            actions.append(oracle_actions[-1] if perturbation.config["labels"] == "expert"
+                           else executed_actions[-1])
+        else:
+            actions.append(normalized(env.data.ctrl, limits))
         valid.append(action_valid)
         phases.append(phase)
         times.append(float(env.data.time))
         poses.append(np.concatenate([env.data.qpos[a:a + 7] for a in
                                      [*env.target_qadr.values(), *env.cover_qadr.values()]]))
         qpos_frames.append(env.data.qpos.copy())
-        if phase == "reveal" and len(depth) == 1:
+        if phase == "reveal" and len(times) == 1:
             Image.fromarray(rgb).save(directory / "reveal.png")
         if phase == "done":
             Image.fromarray(rgb).save(directory / "final.png")
         for name, index in {**decision, **{f"t_{key}_grasp": value
                                              for key, value in grasp.items()}}.items():
-            if len(depth) - 1 == index:
+            if len(times) - 1 == index:
                 Image.fromarray(rgb).save(directory / f"{name}.png")
         progress.set_postfix(phase=phase, refresh=False)
         progress.update(1)
@@ -281,38 +322,50 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
     try:
         context(env, context_plan, record)
         grasp_start_z["cover"] = float(env.data.xpos[env.model.body(cover).id, 2])
-        decision["t_occ"] = len(depth)
+        decision["t_occ"] = len(times)
+        if perturbation:
+            perturbation.start_frame = len(times)
         ordered = sorted(env.cover_qadr, key=lambda name: env.data.qpos[env.cover_qadr[name]])
         correct_id = ordered.index(cover)
 
         def callback(stage):
             if stage == "t_obj":
-                decision["t_obj"] = len(depth)
+                decision["t_obj"] = len(times)
                 grasp_start_z["object"] = float(env.data.xpos[env.model.body(target).id, 2])
             else:
+                if stage.endswith("_approach"):
+                    grasp_streak[stage.split("_")[0]] = 0
                 for key, body_name in (("cover", cover), ("object", target)):
-                    if stage == f"{key}_lift" and key not in grasp:
+                    if stage in (f"{key}_lift", f"{key}_hold") and key not in grasp:
                         grasp_streak[key] = (grasp_streak[key] + 1 if securely_lifted(
                             body_name, grasp_start_z[key]) else 0)
                         if grasp_streak[key] >= 3:
-                            grasp[key] = len(depth)
+                            grasp[key] = len(times)
                 record(stage)
 
-        gains = execute(env, target, callback)
-        if set(grasp) != {"cover", "object"}:
+        failure_reason = None
+        gains = (None, None)
+        try:
+            gains = execute(env, target, callback, perturbation)
+        except (RolloutFailure, IKFailure) as error:
+            if perturbation is None:
+                raise
+            failure_reason = str(error)
+        if failure_reason is None and set(grasp) != {"cover", "object"}:
             raise RuntimeError(f"missing grasp event: {set(('cover', 'object')) - set(grasp)}")
-        if set(transitions) != {"fully_occluded", "cover_released", "object_released"}:
+        if failure_reason is None and set(transitions) != {"fully_occluded", "cover_released", "object_released"}:
             raise RuntimeError(f"missing semantic transition: {transitions}")
-        record("done", False)
-        np.savez_compressed(directory / "observation.npz", depth_m=np.stack(depth),
-                            joint_position=np.stack(proprio), timestamp_s=np.array(times))
-        grasp_event = np.zeros(len(depth), dtype=np.uint8)
-        grasp_event[grasp["cover"]] = 1
-        grasp_event[grasp["object"]] = 2
+        record("done" if failure_reason is None else "failed", False)
+        np.savez_compressed(directory / "observation.npz", joint_position=np.stack(proprio), timestamp_s=np.array(times))
+        grasp_event = np.zeros(len(times), dtype=np.uint8)
+        for key, frame in grasp.items():
+            grasp_event[frame] = 1 if key == "cover" else 2
         np.savez_compressed(directory / "supervision.npz", mask=np.stack(masks),
                             expert_action=np.stack(actions), action_valid=np.array(valid),
                             phase=np.array(phases), grasp_event=grasp_event,
-                            semantic_entity=np.array(entities, dtype=np.uint8))
+                            semantic_entity=np.array(entities, dtype=np.uint8),
+                            **({"oracle_action": np.stack(oracle_actions),
+                                "executed_action": np.stack(executed_actions)} if perturbation else {}))
         if tcow_labels:
             tcow = np.stack(tcow_masks)
             np.savez_compressed(directory / "tcow_labels.npz", mask=tcow,
@@ -338,12 +391,12 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                     "object_ids": list(env.target_qadr), "occluder_ids": list(env.cover_qadr),
                     "object_to_occluder": dict(env.assignment),
                     "cover_ids_at_t_occ": ordered,
-                    "fps": FPS, "frames": len(depth), "resolution": [height, 320],
+                    "visual_input": "rgb", "fps": FPS, "frames": len(times), "resolution": [height, 320],
                     "overview_camera": {"position": env.model.camera("overview").pos.tolist(),
                                         "quaternion": env.model.camera("overview").quat.tolist(),
                                         "fovy": float(env.model.camera("overview").fovy[0]),
                                         "crop_top": top},
-                    "wrist_camera": wrist_camera_metadata(env.model, len(depth)),
+                    "wrist_camera": wrist_camera_metadata(env.model, len(times)),
                     "tcow_labels": "tcow_labels.npz" if tcow_labels else None,
                     "decision_frames": decision,
                     "decision_times_s": {k: v / FPS for k, v in decision.items()},
@@ -357,7 +410,7 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                     "correct_cover_id": correct_id, "cover_id_semantics": "left=0,right=1 at t_occ",
                     "swaps": swaps, "target_object_id": target, "correct_cover_body": cover,
                     "context_plan": context_plan,
-                    "lift_gains_m": gains, "success": True,
+                    "lift_gains_m": gains, "success": failure_reason is None,
                     "mask_ids": {"0": "background", "1": "correct cover", "2": "query target"},
                     "semantic_entity_ids": {"0": "task complete", "1": "responsible cover", "2": "query target"},
                     "semantic_rule": "target until fully occluded; cover until release completes; target until its release completes",
@@ -366,6 +419,19 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
                     "context_setup": "scripted covers and contents; expert uses physics contact",
                     "pose_body_order": body_order,
                     "pose_format": "world xyz (m), quaternion wxyz; 7 values per body"}
+        if perturbation:
+            metadata["control_perturbation"] = {
+                **perturbation.config, "start_frame": decision["t_occ"],
+                "end_frame_exclusive": len(times) - 1, "trace": "perturbation.npz",
+                "oracle_attempts": perturbation.attempts,
+                "type": "continuous_correlated_actuator_noise", "failure_reason": failure_reason}
+            trace = [row for row in perturbation.trace if row["frame"] < len(times) - 1]
+            np.savez_compressed(directory / "perturbation.npz",
+                frames=np.array([row["frame"] for row in trace]),
+                phase=np.array([row["phase"] for row in trace]),
+                expert_ctrl=np.stack([row["expert_ctrl"] for row in trace]),
+                executed_ctrl=np.stack([row["executed_ctrl"] for row in trace]),
+                noise_scale=np.array([row["scale"] for row in trace]))
         (directory / "episode.json").write_text(json.dumps(metadata, indent=2) + "\n")
         (directory / "input.json").write_text(json.dumps({
             "rgb_video": "rgb.mp4", "observation": "observation.npz",
@@ -379,6 +445,4 @@ def generate(root: Path, seed: int, target: str, swaps: int = 1, previews: bool 
         wrist_writer.close()
         if previews:
             mask_writer.close()
-            depth_writer.close()
         env.close()
-

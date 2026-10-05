@@ -1,7 +1,7 @@
 # OAT-Flow
 
 **Occlusion-Aware Tracking-conditioned Flow Policy (OAT-Flow)** combines
-target-conditioned RGB-D history tracking, current wrist vision and
+target-conditioned RGB history tracking, current wrist vision and
 proprioception to generate manipulation action chunks with flow matching.
 Memory occlusion is the task; OAT-Flow is the policy architecture.
 
@@ -20,7 +20,7 @@ Each episode has two phases:
 2. **Manipulation, starting at `t_occ`:** remove the correct cover and pick/place
    the queried object; expert commands have `action_valid=True`.
 
-The policy receives overview RGB-D history, a **visible ground-truth target
+The policy receives overview RGB history, a **visible ground-truth target
 mask on the first frame**, current wrist RGB and current proprioception.
 Later ground-truth masks, object/cover IDs, assignments and world poses are
 supervision or diagnostic data only. Reference close-up query images are saved
@@ -33,43 +33,45 @@ touching the body and a lift of at least 1 cm for three consecutive 25 Hz frames
 
 ## OAT-Flow architecture
 
+Current configuration: frozen TCOW and ImageNet ViT-B/16, 64 wrist tokens,
+a four-layer context decoder initialized from scratch, and an EE-delta action head.
+New training uses RGB only; depth is absent from the model and loader.
+
 ```mermaid
 flowchart TD
-    H["Overview RGB-D history + first-frame target mask"] --> T["TCOW: 30 sampled frames, 240 × 320"]
-    T --> M["Three-mask head"]
-    T --> Z["Current-frame dense features: B × 300 × 768"]
-    Z --> A["Per-token adapter: 768 → 256 → 960"]
-    W["Current wrist RGB: 320 × 320"] --> V["Spatial ViT: 400 tokens × 768"]
-    V --> P["Per-token projection: 768 → 960"]
-    S["Current proprio: 5 joints + gripper"] --> N["Normalize + residual MLP + state projection"]
-    A --> C["Context: B × 701 × 960"]
+    H["Overview RGB history + first-frame target mask"] --> T["Frozen TCOW: 30 frames, 240 × 320; RGB + query = 4 patch channels"]
+    T --> M["Frozen three-mask head: diagnostics only"]
+    T --> Z["Current-frame dense features: 300 × 768"]
+    Z --> A["Trainable overview adapter: 768 → 256 → 960"]
+    W["Current wrist RGB: 320 × 320"] --> V["Frozen ImageNet ViT-B/16: 400 × 768"]
+    V --> P["Spatial average pooling: 64 tokens; trainable projection → 960"]
+    S["Current proprio: 5 joints + gripper"] --> N["Normalize + trainable state adapter: 1 × 960"]
+    A --> C["Concatenate: 300 + 64 + 1 = 365 tokens"]
     P --> C
     N --> C
-    C --> F["Flow Matching: 8 self + cross attention blocks"]
-    F --> O["25 actions × 6 coordinates"]
-    M --> LM["Auxiliary mask loss"]
-    O --> LA["Action velocity MSE"]
+    C --> D["Trainable context decoder: 4 layers, width 960; random initialization"]
+    D --> F["Flow Matching: 8 self + cross attention blocks; 10 Euler steps"]
+    F --> O["H25 × 7: world XYZ delta + rotation-vector delta + absolute gripper"]
+    O --> I["Fixed chunk anchor + bounded IK; execute K10"]
 ```
 
 | Branch | Representation |
 | --- | --- |
-| TCOW | Original 12-block causal TimeSformer; RGB-D plus query input. The added depth channel starts at zero; original RGB/query weights are preserved. Vendor source is unchanged. |
-| Overview adapter | LayerNorm → Linear 768→256 → SiLU → Linear 256→960, independently at each of the 300 spatial locations (15×20). |
-| Wrist | A separate 12-block spatial ViT initialized from TCOW RGB patch, spatial attention/MLP and positional weights. Position embeddings are resized to 20×20. All 400 patch tokens are retained; CLS is used internally and discarded at output. |
-| Proprio | Six normalized joint/gripper values → MLP 6→128→256→32, added to the state padded to 32 values → pretrained Linear 32→960: one state token. |
-| Policy context | 300 overview + 400 wrist + 1 proprio = **701 tokens**, width 960. |
-| Flow Matching | 16 pretrained action layers paired into 8 blocks: action self-attention → MLP → cross-attention to all context tokens → MLP. Expert width 720; each noisy action is padded from 6 to 32 values internally. |
+| TCOW | Original 12-block causal TimeSformer; RGB plus query. Initializing from an RGB-D checkpoint retains kernels 0/1/2/4 and discards depth kernel 3; all other TCOW tensors are unchanged. Vendor code is unchanged. |
+| Overview adapter | LayerNorm → Linear 768→256 → SiLU → Linear 256→960 at each of the 300 spatial locations. |
+| Wrist | Frozen ImageNet ViT-B/16, 20×20 spatial grid pooled to 8×8; trainable projection to width 960. |
+| Proprio | Six normalized joint/gripper values through the state adapter: one token. |
+| Context decoder | 365 tokens, width 960, four layers; RMSNorm, RoPE, GQA and gated MLP; bidirectional attention over observations available now. |
+| Flow Matching | Pretrained action expert: 16 layers paired into eight self/cross-attention blocks; width 720, action/state padding to 32. EE-delta uses seven action coordinates and six proprio coordinates. |
 
-TCOW sends dense features from the current frame to the policy. No global
-pooling, CLS token or predicted mask is used as policy context. The overview
-adapter changes feature width while retaining all spatial locations.
+TCOW supplies dense current-frame features; predicted masks do not enter FM.
+TCOW and wrist encoders remain frozen when using `--flow-only --contextualize
+--freeze-wrist-encoder`. Decoder, adapters and FM train with action loss.
 
-Original TCOW weights and the action expert from `lerobot/smolvla_base`
-initialize joint training. The wrist encoder copies TCOW spatial weights once,
-then trains independently. The project's dense interaction replaces the
-reference model's VLM context; its full VLM is not loaded into this policy.
-See [policy details](experiments/tcow_joint_flow/README.md) and
-[persistent runtime and pretrained paths](runtime/README.md).
+Removing depth changes hidden features even with frozen remaining weights:
+RGB-only FM needs a fresh training run. Historical RGB-D checkpoints retain their
+original architecture during evaluation; restoration never silently drops depth.
+See [policy details and run commands](policy/README.md).
 
 ## History and closed loop
 
@@ -108,14 +110,14 @@ shows overview RGB, the three predicted masks and wrist RGB.
 
 ```text
 Frozen scene_plan.jsonl
-  → simulate complete expert episodes, record both cameras/depth/actions/masks
+  → simulate complete expert episodes, record both RGB cameras/actions/masks
   → audit every episode and write manifest.jsonl
   → finalize absolute or delta actions
   → fit normalization using standard TRAIN only
   → index context endpoints and action chunk starts every 10 frames
-  → load/prefetch episode clusters, shuffle samples and minibatches
-  → TCOW-only mask updates or joint TCOW + wrist + flow updates
-  → offline validation; optional closed-loop validation
+  → native DataLoader: LeRobot frame decoding, cluster/phase minibatch order
+  → train decoder/adapters/FM with frozen TCOW and wrist
+  → save epoch checkpoint; evaluate closed loop separately
 ```
 
 The frozen plan contains 220 scenes with four target queries per scene:
@@ -144,7 +146,7 @@ target-conditioned demonstrations, not four independently perturbed contexts.
 | --- | --- |
 | `rgb.mp4` | Complete 25 Hz overview RGB, 240×320 |
 | `wrist_rgb.mp4` | Synchronized 25 Hz wrist RGB, 320×320 |
-| `observation.npz` | Metric depth, normalized joint positions, timestamps |
+| `observation.npz` | Normalized joint positions and timestamps; new collections contain no depth |
 | `query_mask.png` | Visible target mask on frame zero |
 | `tcow_labels.npz` | Three binary channels: target amodal, frontmost occluder, outermost container |
 | `supervision.npz` | Absolute expert commands, action validity, phases, semantic masks and grasp events |
@@ -191,20 +193,19 @@ Every epoch covers the indexed samples, shuffled within episode clusters.
 | At/after `t_occ`, valid actions | TCOW, mask head, wrist encoder and FM | Action velocity MSE + 0.2 × original TCOW mask loss |
 
 Mask loss supervises the 30 sampled history frames. Action loss supervises
-the six coordinates of valid future steps. Flow time sampling uses
+the valid future action coordinates (seven for EE-delta). Flow time sampling uses
 Beta(1.5,1), sinusoidal time embedding and the reference model's time/velocity
 convention adapted to noise at t=0. Inference uses ten Euler steps.
 
 `--flow-only` freezes TCOW and its mask head, drops context-only samples and
-mask loss, and trains the flow branch including its wrist encoder/adapters.
+mask loss. `--freeze-wrist-encoder` also freezes wrist vision; adapters, context
+decoder and FM remain trainable.
 DDP uses a separate loader process, temporary shared RAM arrays, packed masks
 and sampled wrist frames. It prefetches the next cluster and releases completed
 clusters; shared buffers are capped at 28 GiB.
 
-Offline validation covers all valid H25/K10 chunks after `t_occ`, excludes
-padding, and reports MAE in decoded absolute joint-limit units, including
-first-step/first-ten/per-offset/per-joint metrics. It is separate from
-closed-loop grasp/task success. Test splits are not used for checkpoint selection.
+Training skips validation and automatic rollout. Use the completed `final.pt`
+for a separate closed-loop test; test splits do not select checkpoints.
 
 ## Generate data
 
@@ -212,9 +213,9 @@ From the repository root, use the project `.venv`:
 
 ```bash
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-.venv/bin/python -m memory_occlusion.dataset.generate_dataset \
-  --plan memory_occlusion/dataset/scene_plan.jsonl \
-  --output memory_occlusion/datasets/memory_occlusion_multiview_25hz_delta_v1 \
+.venv/bin/python -m OATFlow.dataset.generate_dataset \
+  --plan OATFlow/dataset/scene_plan.jsonl \
+  --output /path/to/datasets/e09_data \
   --action-mode delta --workers 8
 ```
 
@@ -223,10 +224,49 @@ The command runs collection, full audit and normalization; long stages show
 tqdm progress. Existing output directories and failed expert rollouts are
 rejected. Robot grasp/contact parameters are simulation settings.
 
+To collect extra demonstrations in the same command, add `--extra-demos 3`
+with `--action-mode delta` or `--action-mode ee`. The default `--extra-demos 0` collects only the
+original demonstrations; `2` requests exactly two successful extras per train
+sample, while `3` requests up to three and requires at least two. TCOW labels
+are enabled automatically. After collecting, auditing and normalizing the
+base dataset, the generator runs continuous expert-plus-joint perturbation
+from shuffle end, with physical grasp/placement retries. Labels are the
+actually executed commands (type 2), and each demo retains its own full
+RGB/wrist/proprio history and H25 joint/EE-delta chunks at stride 10.
+
+Successful extras are attached under each train episode's `demos/a01`–`a03`
+and indexed in `demonstrations.json`; the existing training loaders consume
+them automatically. Validation/test episodes are retained; normalization is fitted on the original
+and extra standard/train demonstrations together. Fewer than two successful extras after 12 trials causes a
+reported shortfall and nonzero exit. Configuration, README and results are
+written beside the data, with augmentation progress in
+`augmentation/{config.json,summary.json,scenes/,scene_logs/}`.
+
+Use `--action-mode ee` to generate EE-delta labels directly for both original
+and extra demonstrations. `ee_actions.npz` stores H25 fixed-anchor world XYZ
+(metres), rotation-vector delta (radians) and absolute gripper (7D), plus joint6
+proprioception and anchor poses. Labels use FK of the actual executed actuator
+commands, including gravity compensation. Absolute joint labels remain in
+`supervision.npz`; EE datasets do not write `relative_actions.npz`.
+Normalization uses valid H25 steps from standard/train only, including successful
+extra demonstrations; validation/test data never contribute.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+taskset -c 0-7 python -u -m OATFlow.dataset.generate_dataset \
+  --plan OATFlow/dataset/scene_plan.jsonl --action-mode ee --extra-demos 2 \
+  --workers 4 --output /workspace/datasets/e14_ee2
+```
+
+This collects 880 base episodes and exactly two successful extra demos per
+640 standard/train episodes (1,280 extra; 2,160 total). Training sees 1,920
+train demonstrations per epoch. Run in `huy` tmux through `tee` to save logs.
+
 On the persistent server volume, activate the environment and use dataset/
 checkpoint paths under `/workspace/memory_occlusion`; see
-[runtime setup](runtime/README.md). Training commands, validation and rollout
-options are in the [policy README](experiments/tcow_joint_flow/README.md).
+[policy setup and commands](policy/README.md). Training and closed-loop options
+are documented beside their source modules.
 
 ## Code map
 
@@ -235,9 +275,8 @@ options are in the [policy README](experiments/tcow_joint_flow/README.md).
 | `environment/`, `task.py` | Simulator, observations, task rules and joint-limit conversion |
 | `dataset/episode.py`, `dataset/generate_dataset.py` | Expert collection and full dataset generation |
 | `dataset/actions.py`, `dataset/audit_tcow_dataset.py` | Action conversion/normalization and dataset audit |
-| `experiments/tcow_joint_flow/data.py` | History selection, chunk indexing and minibatch inputs |
-| `experiments/tcow_joint_flow/model.py`, `tcow.py` | TCOW connection, depth adaptation and original mask loss |
-| `experiments/tcow_joint_flow/wrist.py`, `flow_matching.py` | Wrist ViT and dense action expert |
-| `experiments/tcow_joint_flow/train_from_tcow_context.py`, `train_distributed.py` | CUDA/MPS and distributed training |
-| `experiments/tcow_joint_flow/validation.py`, `rollout.py` | Offline validation and live closed-loop evaluation |
-| `runtime/` | Persistent volume environment, dependency lock and pretrained input paths |
+| `policy/model.py` | Complete policy architecture and checkpoint restoration |
+| `policy/tracking.py` | Upstream TCOW integration and original mask loss |
+| `policy/data.py`, `policy/loader.py` | Action chunks, LeRobot decoding and native DataLoader |
+| `policy/train.py`, `policy/train_distributed.py` | CUDA/MPS and distributed training |
+| `policy/rollout.py`, `policy/visualization.py` | Live closed-loop evaluation and video panels |

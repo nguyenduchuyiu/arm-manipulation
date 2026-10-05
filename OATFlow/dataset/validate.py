@@ -31,10 +31,19 @@ def validate(directory):
         if not metadata["success"] or metadata["fps"] != 25:
             raise ValueError("unsuccessful episode or wrong FPS")
         height, width = metadata["resolution"]
-        if obs["depth_m"].shape != (n, height, width) or gt["mask"].shape != (n, height, width):
-            raise ValueError("depth/mask shape mismatch")
-        if not np.isfinite(obs["depth_m"]).all() or not (obs["depth_m"] > 0).all():
-            raise ValueError("invalid metric depth")
+        if gt["mask"].shape != (n, height, width):
+            raise ValueError("mask shape mismatch")
+        if metadata.get("visual_input") == "rgb":
+            if set(obs.files) != {"joint_position", "timestamp_s"}:
+                raise ValueError("RGB observations must contain only joints and timestamps")
+        elif "depth_m" in obs:  # Audit existing RGB-D collections without changing them.
+            depth = obs["depth_m"]
+            if depth.shape != (n, height, width) or not np.isfinite(depth).all() or not (depth > 0).all():
+                raise ValueError("invalid metric depth")
+        else:
+            raise ValueError("missing visual_input=rgb metadata")
+        if obs["timestamp_s"].shape != (n,):
+            raise ValueError("timestamp shape mismatch")
         if not np.allclose(np.diff(obs["timestamp_s"]), .04, atol=1e-9):
             raise ValueError("timestamps are not 25 Hz")
         for array in (obs["joint_position"], gt["expert_action"]):
@@ -84,7 +93,9 @@ def validate(directory):
         if metadata["tcow_labels"]:
             with np.load(directory / metadata["tcow_labels"]) as labels:
                 masks = labels["mask"]
-                if masks.shape != (n, 3, height, width) or not np.isin(masks, (0, 1)).all():
+                # Collected masks are bool; avoid materializing int64 indices for hundreds of millions of pixels.
+                if masks.shape != (n, 3, height, width) or (masks.dtype != np.bool_ and
+                        np.any((masks != 0) & (masks != 1))):
                     raise ValueError("invalid TCOW mask shape or values")
                 if list(labels["channel_names"]) != ["target_amodal", "frontmost_occluder",
                                                       "outermost_container"]:

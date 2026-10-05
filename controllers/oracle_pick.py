@@ -14,6 +14,14 @@ ARM_NAMES = tuple(MUJOCO_JOINTS)[:5]
 TCP_LOCAL = np.array((0.539369, -0.039412, 0.230434))
 
 
+class GraspFailure(RuntimeError):
+    """A completed grasp attempt did not securely lift its target."""
+
+
+class IKFailure(RuntimeError):
+    """The current physical geometry is unreachable by this position oracle."""
+
+
 def pick(
     model: mujoco.MjModel,
     data: mujoco.MjData,
@@ -26,6 +34,7 @@ def pick(
     control_hz: int = 25,
     lift_height: float = .12,
     straight_lift: bool = False,
+    perturb_command: Callable[[str, np.ndarray], np.ndarray] | None = None,
 ) -> float:
     """Pick and optionally place one body; return its held height gain in metres.
 
@@ -57,7 +66,7 @@ def pick(
                                bounds=(low[:3], high[:3]), max_nfev=400)
         tcp, rotation = fk(result.x)
         if np.linalg.norm(tcp - point) > 0.008:
-            raise RuntimeError(f"Oracle IK cannot reach {np.round(point, 3)}")
+            raise IKFailure(f"Oracle IK cannot reach {np.round(point, 3)}")
         return np.r_[result.x, wrist], rotation
 
     point = np.asarray(grasp_point, dtype=np.float64)
@@ -87,8 +96,12 @@ def pick(
             desired = start + t * t * (3 - 2 * t) * (target - start)
             compensation = data.qfrc_bias[dofs] / model.actuator_gainprm[:5, 0]
             command = np.clip(desired + compensation, low, high)
-            data.ctrl[:5] = command
-            data.ctrl[5] = gripper
+            command = np.r_[command, gripper]
+            if perturb_command is not None:
+                command = perturb_command(stage, command)
+            if command.shape != (6,) or not np.isfinite(command).all():
+                raise ValueError("invalid oracle command")
+            data.ctrl[:] = command
             if on_step is not None:
                 on_step(stage)
             mujoco.mj_step(model, data, substeps)
@@ -117,7 +130,7 @@ def pick(
 
             result = least_squares(residual, q, bounds=(low, high), max_nfev=400)
             if np.linalg.norm(residual(result.x)[:3]) > .8:
-                raise RuntimeError("cannot lift vertically with the current grip orientation")
+                raise IKFailure("cannot lift vertically with the current grip orientation")
             q = result.x
             move("lift", q, -0.0255, seconds / 10)
         return q
@@ -138,7 +151,7 @@ def pick(
     gain = float(data.xpos[body_id, 2] - start_z)
     if place_xy is not None:
         if gain < 0.04 or held_steps < round(.2 * control_hz):
-            raise RuntimeError(f"{body_name}: failed to lift ({gain:.3f} m)")
+            raise GraspFailure(f"{body_name}: failed to lift ({gain:.3f} m)")
         tcp = data.xpos[gripper_id] + data.xmat[gripper_id].reshape(3, 3) @ TCP_LOCAL
         offset = tcp - data.xpos[body_id]
         destination = np.array((*place_xy, start_z + 0.003)) + offset

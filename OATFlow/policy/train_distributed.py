@@ -20,19 +20,19 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
-from OATFlow.experiments.tcow_joint_flow.data import (
-    load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
+from OATFlow.policy.data import (
+    expand_demonstrations, load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
     training_samples,
 )
-from OATFlow.experiments.tcow_joint_flow.flow_matching import DenseFlowMatching
-from OATFlow.experiments.tcow_joint_flow.model import JointTCOWFlow, expand_depth_channel, load_training_tracker
-from OATFlow.experiments.tcow_joint_flow.tcow import (
+from OATFlow.policy.model import (
+    FlowMatchingHead, OATFlowPolicy, checkpoint_uses_depth, load_training_tracker, set_tracker_input,
+)
+from OATFlow.policy.tracking import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
 )
-from OATFlow.experiments.tcow_joint_flow.train_from_tcow_context import (
-    argument_parser, evaluate, save_checkpoint,
+from OATFlow.policy.train import (
+    argument_parser, save_checkpoint,
 )
-from OATFlow.experiments.tcow_joint_flow.validation import evaluate_closed_loop
 
 
 def rank_batch(batch, sizes, rank):
@@ -93,14 +93,19 @@ def release_cluster(episodes, destination, rank):
 
 def main():
     faulthandler.register(signal.SIGUSR1, all_threads=True)
-    parser = argument_parser()
+    parser = argument_parser(distributed=True)
     parser.description = __doc__
     parser.add_argument("--rank-batch-sizes", type=int, nargs="+", required=True)
-    parser.add_argument("--smoke-steps", type=int, choices=(0, 4, 8), default=0,
-                        help="verify gradients and synchronization; eight steps cross a cluster boundary")
+    parser.add_argument("--resume", type=Path,
+                        help="continue joint model weights from an epoch checkpoint; AdamW restarts")
     args = parser.parse_args()
-    if args.closed_loop_every_evals < 0:
-        raise ValueError("closed-loop-every-evals must be nonnegative")
+    if (args.wrist_weights or args.freeze_wrist_encoder) and not args.wrist_camera:
+        raise ValueError("wrist initialization/freezing requires --wrist-camera")
+    if args.wrist_weights and not args.wrist_weights.is_file():
+        raise FileNotFoundError(args.wrist_weights)
+    if args.contextualize:
+        if not (args.flow_only and args.wrist_camera and args.freeze_wrist_encoder and args.wrist_weights):
+            raise ValueError("contextualization requires frozen TCOW and a frozen pretrained wrist ViT")
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -108,25 +113,28 @@ def main():
         raise ValueError("torchrun must use two or three CUDA GPUs")
     if len(args.rank_batch_sizes) != world or min(args.rank_batch_sizes) < 1:
         raise ValueError("supply one positive batch size per rank")
-    if min(args.epochs, args.cluster_size, args.eval_every_clusters) < 1:
-        raise ValueError("epochs, cluster size and evaluation interval must be positive")
+    if min(args.epochs, args.cluster_size) < 1:
+        raise ValueError("epochs and cluster size must be positive")
     if args.config_checkpoint is None:
         raise ValueError("--config-checkpoint is required")
     for path in (args.weights, args.flow_weights, args.config_checkpoint):
         if not path.is_file():
             raise FileNotFoundError(path)
+    if args.resume and not args.resume.is_file():
+        raise FileNotFoundError(args.resume)
     args.batch_size = sum(args.rank_batch_sizes)
     torch.set_num_threads(2)
+    torch.set_float32_matmul_precision("high")
     torch.cuda.set_device(local_rank)
     dist.init_process_group("nccl", timeout=timedelta(hours=2),
                             device_id=torch.device("cuda", local_rank))
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
-    train_rows, val_rows = split_rows(args.data)
-    if args.max_val_episodes:
-        val_rows = val_rows[:args.max_val_episodes]
+    train_rows, _ = split_rows(args.data)
+    train_parents = len(train_rows)
+    train_rows = expand_demonstrations(args.data, train_rows)
     if args.wrist_camera:
-        require_wrist_data(args.data, train_rows + val_rows)
+        require_wrist_data(args.data, train_rows)
     train_rows = [train_rows[i] for i in rng.permutation(len(train_rows))]
     clusters = [train_rows[i:i + args.cluster_size]
                 for i in range(0, len(train_rows), args.cluster_size)]
@@ -144,19 +152,35 @@ def main():
             "action_horizon": 25, "context_stride": 10, "action_stride": 10,
             "inference_execution_steps": 10, "flow_steps": 10,
             "flow_type": "dense_action_expert", "flow_time": "beta_sinusoidal_noise_at_t0",
-            "train_episodes": sum(map(len, clusters)), "validation_episodes": len(val_rows),
+            "train_episodes": sum(map(len, clusters)),
+            "train_parent_episodes": len({row["parent_path"] for rows in clusters for row in rows}),
+            "available_train_parent_episodes": train_parents,
+            "validation_episodes": 0,
+            "validation_enabled": False,
+            "visual_input": "rgb", "tcow_input_channels": 4,
+            "contextualize": args.contextualize,
+            "context_tokens": 365 if args.contextualize else (701 if args.wrist_camera else 301),
         }, indent=2) + "\n")
     dist.barrier()
     config = torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
     source = torch.load(args.weights, map_location="cpu", weights_only=False, mmap=True)
     seeker_args = dict(config["seeker_args"])
     seeker_args["tracker_pretrained"] = False
-    tcow = expand_depth_channel(Seeker(logging.getLogger("tcow"), **seeker_args))
+    tcow = set_tracker_input(Seeker(logging.getLogger("tcow"), **seeker_args))
     source_step = load_training_tracker(tcow, source, args.flow_only)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
-    flow = DenseFlowMatching(wrist_backbone=tcow.seeker.tracker_backbone if args.wrist_camera else None)
+    flow = FlowMatchingHead(wrist_backbone=tcow.seeker.tracker_backbone if args.wrist_camera else None,
+                            contextualize=args.contextualize)
     imported = flow.load_pretrained(args.flow_weights)
+    if args.contextualize:
+        imported["context_initialization"] = {"initialization": "random", "layers": 4, "width": 960,
+                                              "parameters": sum(p.numel() for p in flow.context_decoder.parameters())}
+    if args.wrist_weights:
+        imported["wrist_initialization"] = flow.wrist_encoder.load_vit_base(args.wrist_weights)
+    if args.freeze_wrist_encoder:
+        flow.wrist_encoder.freeze()
+    imported["wrist_encoder_frozen"] = args.freeze_wrist_encoder
     statistics = [policy_statistics(args.data, [r for rows in clusters for r in rows])
                   if rank == 0 else None]
     dist.broadcast_object_list(statistics, src=0)
@@ -166,12 +190,33 @@ def main():
         flow.visual.load_state_dict({k.removeprefix("flow.visual."): v for k, v in source["model"].items()
                                      if k.startswith("flow.visual.")}, strict=True)
         imported["visual_initialization"] = str(args.weights)
-    imported["action_representation"] = "relative_joint" if flow.relative_actions else "absolute_joint"
+    imported["action_representation"] = flow.action_representation
+    imported["tcow_input"] = {"visual_input": "rgb", "patch_channels": 4,
+                              "source_patch_channels": 5 if checkpoint_uses_depth(source) else 4,
+                              "conversion": "keep RGB and query kernels; discard depth kernel"}
+    model = OATFlowPolicy(tcow, flow)
+    resume_step = 0
+    if args.resume:
+        resumed = torch.load(args.resume, map_location="cpu", weights_only=False, mmap=True)
+        if checkpoint_uses_depth(resumed):
+            raise ValueError("RGB training cannot resume an RGB-D run; initialize a fresh experiment")
+        if (resumed["flow_type"] != model.flow.flow_type or
+                resumed["wrist_camera"] != args.wrist_camera or
+                bool(resumed.get("contextualize", False)) != flow.contextualize or
+                resumed["action_representation"] != imported["action_representation"]):
+            raise ValueError("resume checkpoint architecture or action representation differs")
+        if args.wrist_camera and bool(resumed.get("wrist_imagenet_normalization", False)) != flow.wrist_encoder.imagenet_normalization:
+            raise ValueError("resume checkpoint wrist normalization differs")
+        model.load_state_dict(resumed["model"], strict=True)
+        resume_step = int(resumed["step"])
+        imported.update(resume_checkpoint=str(args.resume), resume_step=resume_step,
+                        resumed_tensors=len(resumed["model"]), optimizer_restored=False)
+        del resumed
     if rank == 0:
         (args.output / "flow_initialization.json").write_text(
             json.dumps({"import": imported, "normalization": statistics[0]}, indent=2) + "\n")
         print(json.dumps({"event": "pretrained_flow", **imported}), flush=True)
-    model = JointTCOWFlow(tcow, flow).cuda()
+    model = model.cuda()
     if args.flow_only:
         model.tcow.requires_grad_(False)
     # FM is unused on mask-only batches; the used parameter set changes each step.
@@ -180,7 +225,7 @@ def main():
                                      gradient_as_bucket_view=True)
     torch.manual_seed(args.seed + rank)
     losses = MyLosses(config["train_args"], logging.getLogger("tcow"), "train")
-    groups = [{"params": model.flow.parameters(), "lr": args.flow_lr,
+    groups = [{"params": [p for p in model.flow.parameters() if p.requires_grad], "lr": args.flow_lr,
                "betas": (.9, .95), "weight_decay": 1e-10}]
     if not args.flow_only:
         groups.insert(0, {"params": model.tcow.parameters(), "lr": args.tcow_lr})
@@ -193,6 +238,9 @@ def main():
             (sum(not action for plan in cluster for _, action in plan),
              sum(action for plan in cluster for _, action in plan))) for cluster in plans)
     total_steps = args.epochs * steps_per_epoch
+    if resume_step % steps_per_epoch:
+        raise ValueError("resume requires an epoch boundary with the same batching")
+    completed_epochs = resume_step // steps_per_epoch
     total_samples = sum(len(plan) for cluster in plans for plan in cluster)
     total_action = sum(action for cluster in plans for plan in cluster for _, action in plan)
     if rank == 0:
@@ -202,9 +250,13 @@ def main():
                           "rank_batch_sizes": args.rank_batch_sizes, "world_size": world,
                           "device_name": torch.cuda.get_device_name(), "source_tcow_step": source_step,
                           "trainable_tcow": sum(p.numel() for p in model.tcow.parameters() if p.requires_grad),
-                          "trainable_flow": sum(p.numel() for p in model.flow.parameters()),
+                          "trainable_flow": sum(p.numel() for p in model.flow.parameters() if p.requires_grad),
+                          "trainable_wrist_encoder": sum(p.numel() for p in model.flow.wrist_encoder.parameters()
+                                                         if p.requires_grad) if args.wrist_camera else 0,
+                          "resume_step": resume_step, "completed_epochs": completed_epochs,
+                          "total_epochs": completed_epochs + args.epochs,
                           "fresh_flow": False, "flow_type": model.flow.flow_type}), flush=True)
-    step, best, wait_s = 0, -1.0, 0.0
+    step, wait_s = 0, 0.0
     history, checked_phases = [], set()
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats()
@@ -274,7 +326,8 @@ def main():
                         action_loss = (((velocity.float() - target).square() * valid[:, :, None]).sum()
                                        * (world * bool(count)) / (valid_count * 6)) if is_action else logits.new_zeros(())
                     mask_loss = (logits.sum() * 0 if args.flow_only else
-                                 original_mask_loss(losses, logits, truth, step / max(total_steps, 1))
+                                 original_mask_loss(losses, logits, truth,
+                                                    (resume_step + step) / max(resume_step + total_steps, 1))
                                  * (world * count / len(batch)))
                     total = action_loss + args.mask_loss_weight * mask_loss
                     if not torch.isfinite(total):
@@ -298,7 +351,9 @@ def main():
                             raise AssertionError(f"missing or nonfinite gradients on rank {rank}")
                         wrist_grad = model.flow.wrist_encoder.patch.weight.grad if args.wrist_camera else None
                         wrist_value = float(wrist_grad.float().abs().sum()) if wrist_grad is not None else None
-                        if args.wrist_camera and is_action and (wrist_value is None or not np.isfinite(wrist_value) or wrist_value <= 0):
+                        if args.freeze_wrist_encoder and any(p.grad is not None for p in model.flow.wrist_encoder.parameters()):
+                            raise AssertionError("frozen wrist encoder created gradients")
+                        if args.wrist_camera and not args.freeze_wrist_encoder and is_action and (wrist_value is None or not np.isfinite(wrist_value) or wrist_value <= 0):
                             raise AssertionError(f"missing or nonfinite wrist gradient on rank {rank}")
                         if not is_action and wrist_grad is not None:
                             raise AssertionError("mask-only batch created wrist gradients")
@@ -307,7 +362,8 @@ def main():
                                               "latent_shape": list(latent.shape),
                                               "context_shape": list(context.shape) if context is not None else None,
                                               "patch_grad": values[0], "mask_head_grad": values[1],
-                                              "flow_grad": values[2], "wrist_grad": wrist_value}), flush=True)
+                                              "flow_grad": values[2], "wrist_grad": wrist_value,
+                                              "frozen_wrist_encoder": args.freeze_wrist_encoder}), flush=True)
                         checked_phases.add(is_action)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
                                                    error_if_nonfinite=True)
@@ -350,31 +406,25 @@ def main():
                         return
                 release_cluster(episodes, shared_root / str(cluster_index), rank)
                 del episodes
-                if (cluster_index + 1) % args.eval_every_clusters == 0 or cluster_index + 1 == len(clusters) * args.epochs:
+                if (cluster_index + 1) % len(clusters) == 0:
                     dist.barrier()
-                    metrics = evaluate(model, args.data, val_rows, "cuda", distributed=True)
                     if rank == 0:
-                        if args.closed_loop_every_evals and (len(history) + 1) % args.closed_loop_every_evals == 0:
-                            metrics["closed_loop"] = evaluate_closed_loop(
-                                model, args.data, val_rows, args.output / "validation" / f"step_{step}", step)
-                        if best < 0 or metrics["action_mae"] < best:
-                            best = metrics["action_mae"]
-                            save_checkpoint(args.output / "best.pt", model, step, args, metrics)
-                        record = {"step": step, "clusters_done": cluster_index + 1,
-                                  "epoch": cluster_index // len(clusters) + 1,
-                                  "validation": metrics, "best_action_mae": best,
+                        save_checkpoint(args.output / "latest.pt", model, resume_step + step, args)
+                        record = {"step": resume_step + step, "resumed_run_step": step,
+                                  "clusters_done": completed_epochs * len(clusters) + cluster_index + 1,
+                                  "epoch": completed_epochs + cluster_index // len(clusters) + 1,
                                   "action_loss": float(logs[0]), "mask_loss": float(logs[1]),
                                   "elapsed_s": time.perf_counter() - started, "prefetch_wait_s": wait_s,
                                   "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30,
                                   "peak_cpu_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20}
                         history.append(record)
+                        (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
                         tqdm.write(json.dumps(record), file=sys.stdout)
                     dist.barrier()
     if rank == 0:
         shared_root.rmdir()
-        save_checkpoint(args.output / "final.pt", model, step, args, history[-1]["validation"])
-        (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
-        print(json.dumps({"event": "complete", "steps": step,
+        (args.output / "final.pt").hardlink_to(args.output / "latest.pt")
+        print(json.dumps({"event": "complete", "steps": resume_step + step, "resumed_run_steps": step,
                           "elapsed_s": time.perf_counter() - started}), flush=True)
     dist.barrier()
     dist.destroy_process_group()

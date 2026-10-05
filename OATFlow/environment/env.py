@@ -85,7 +85,6 @@ class MemoryOcclusionEnv(gym.Env):
                                        dtype=np.float32)
         self.observation_space = spaces.Dict({
             "overview_rgb": spaces.Box(0, 255, shape=(resolution, resolution, 3), dtype=np.uint8),
-            "overview_depth_m": spaces.Box(0.0, np.inf, shape=(resolution, resolution), dtype=np.float32),
             "wrist_rgb": spaces.Box(0, 255, shape=(resolution, resolution, 3), dtype=np.uint8),
             "reference_rgb": spaces.Box(0, 255, shape=(REFERENCE_SIZE, REFERENCE_SIZE, 3), dtype=np.uint8),
             "robot_joint_positions": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
@@ -109,9 +108,7 @@ class MemoryOcclusionEnv(gym.Env):
         self.layout = "standard"
         self.assignment: dict[str, str] = {}
         self.reveal_rgb: np.ndarray | None = None
-        self.reveal_depth_m: np.ndarray | None = None
         self.context_rgb: np.ndarray | None = None
-        self.context_depth_m: np.ndarray | None = None
         self.reference_images: dict[str, np.ndarray] = {}
         self.query_target: str | None = None
         self.selected_cover: str | None = None
@@ -162,17 +159,13 @@ class MemoryOcclusionEnv(gym.Env):
                 self.data.qpos[qadr + 2] = {"Butter": .020660, "Popcorn": .022136,
                                           "Tuna": .014144}[name] + .002
         self._place_covers(visible=False)
-        rgb_frames, depth_frames = [], []
+        rgb_frames = []
         for frame in range(REVEAL_FRAMES):
             mujoco.mj_step(self.model, self.data, 10)
             if (frame + 1) % self.record_stride == 0:
-                rgb, depth = self._overview()
-                rgb_frames.append(rgb)
-                depth_frames.append(depth)
+                rgb_frames.append(self._overview())
         self.reveal_rgb = np.stack(rgb_frames)
-        self.reveal_depth_m = np.stack(depth_frames)
         self.context_rgb = self.reveal_rgb
-        self.context_depth_m = self.reveal_depth_m
         self.reference_images = self._make_references(self.reveal_rgb[-1])
         self.initial_positions = self.target_positions()
         return self.observe(), self._info()
@@ -195,7 +188,7 @@ class MemoryOcclusionEnv(gym.Env):
         if self.phase != "reveal":
             raise RuntimeError("occlude requires reveal phase")
         starts = {"cover_a": (-0.15, -0.24), "cover_b": (1.25, -0.24)}
-        rgb_frames, depth_frames = [], []
+        rgb_frames = []
         for frame in range(COVER_FRAMES):
             progress = (frame + 1) / COVER_FRAMES
             travel = min(progress / 0.6, 1.0)
@@ -212,21 +205,14 @@ class MemoryOcclusionEnv(gym.Env):
                 )
             mujoco.mj_forward(self.model, self.data)
             if (frame + 1) % self.record_stride == 0:
-                rgb, depth = self._overview()
-                rgb_frames.append(rgb)
-                depth_frames.append(depth)
+                rgb_frames.append(self._overview())
         hold_frames = HOLD_FRAMES // self.record_stride
         self.context_rgb = np.concatenate((
             self.reveal_rgb, np.stack(rgb_frames),
             np.repeat(rgb_frames[-1][None], hold_frames, axis=0),
         ))
-        self.context_depth_m = np.concatenate((
-            self.reveal_depth_m, np.stack(depth_frames),
-            np.repeat(depth_frames[-1][None], hold_frames, axis=0),
-        ))
         reveal_frames = REVEAL_FRAMES // self.record_stride
         self.reveal_rgb = self.context_rgb[:reveal_frames]
-        self.reveal_depth_m = self.context_depth_m[:reveal_frames]
         self.phase = "occlude"
         return self.observe()
 
@@ -251,15 +237,9 @@ class MemoryOcclusionEnv(gym.Env):
             self.failure_reason = "wrong_cover"
         return self.failure_reason is None
 
-    def _overview(self) -> tuple[np.ndarray, np.ndarray]:
-        self.renderer.disable_depth_rendering()
+    def _overview(self) -> np.ndarray:
         self.renderer.update_scene(self.data, camera="overview")
-        rgb = self.renderer.render().copy()
-        self.renderer.enable_depth_rendering()
-        self.renderer.update_scene(self.data, camera="overview")
-        depth = self.renderer.render().copy()
-        self.renderer.disable_depth_rendering()
-        return rgb, depth
+        return self.renderer.render().copy()
 
     def segmentation(self) -> np.ndarray:
         self.segmentation_renderer.update_scene(self.data, camera="overview")
@@ -292,14 +272,15 @@ class MemoryOcclusionEnv(gym.Env):
         return self.renderer.render().copy()
 
     def observe(self) -> dict[str, np.ndarray]:
-        rgb, depth = self._overview()
+        rgb = self._overview()
         wrist = self.wrist_image()
         reference = (np.zeros((REFERENCE_SIZE, REFERENCE_SIZE, 3), dtype=np.uint8)
                      if self.query_target is None else self.reference_images[self.query_target])
-        return {"overview_rgb": rgb, "overview_depth_m": depth,
+        observation = {"overview_rgb": rgb,
                 "wrist_rgb": wrist, "reference_rgb": reference.copy(),
                 "robot_joint_positions": self.data.qpos[self.robot_qpos_addresses].astype(np.float32).copy(),
                 "robot_joint_velocities": self.data.qvel[self.robot_qvel_addresses].astype(np.float32).copy()}
+        return observation
 
     def step(self, action: np.ndarray
              ) -> tuple[dict[str, np.ndarray], float, bool, bool, dict]:
@@ -393,7 +374,6 @@ class MemoryOcclusionEnv(gym.Env):
                 "success": self.success, "failure_reason": self.failure_reason}
 
     def render(self) -> np.ndarray:
-        self.renderer.disable_depth_rendering()
         self.renderer.update_scene(self.data, camera="overview")
         return self.renderer.render().copy()
 
