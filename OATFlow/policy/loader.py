@@ -122,10 +122,10 @@ class ActionChunkDataset(Dataset):
         return prepare_samples(episodes, items, self.wrist)
 
 
-def make_dataloader(dataset, batches, seed, pin_memory):
+def make_dataloader(dataset, batches, seed, pin_memory, num_workers=2, prefetch_factor=2):
     # These are the standard DataLoader controls used by LeRobot's trainer.
-    return DataLoader(dataset, batch_sampler=batches, num_workers=2,
-                      prefetch_factor=2, persistent_workers=True, pin_memory=pin_memory,
+    return DataLoader(dataset, batch_sampler=batches, num_workers=num_workers,
+                      prefetch_factor=prefetch_factor, persistent_workers=True, pin_memory=pin_memory,
                       multiprocessing_context="spawn",
                       generator=torch.Generator().manual_seed(seed))
 

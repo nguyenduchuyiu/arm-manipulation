@@ -43,10 +43,15 @@ only requested frames through LeRobot's eight-entry decoder cache. Native
 DataLoader controls batching, collation, pinning and prefetching (factor 2 per
 worker, four batches total). History is `round(linspace(0,t,30))`; sampling order,
 H25 labels and short batches are preserved. Distributed training uses this same
-DataLoader/LeRobot path, with two workers per rank and one compressed video cache
+DataLoader/LeRobot path, with one worker per rank and one compressed video cache
 shared across ranks. Global batches are split into explicit rank batch sizes;
 an empty rank gets a zero-weight dummy at a short tail. No manual episode
 prefetch queue, decoder thread pool or shared decoded clusters remain.
+DDP uses native prefetch factor one and unpinned CPU batches: a float
+RGB/query/mask batch is about 0.6 GiB/rank, so multiple pinned queues exceeded
+the server account's 48 GiB memory.high threshold. The single-GPU loader keeps
+two workers, prefetch factor two and pinning. DDP collective timeout is five
+minutes; progress reports cumulative loader wait time.
 
 ## Train on 3090
 
@@ -108,11 +113,11 @@ taskset -c 56-63 /mnt/disk1/backup_user/hoang.pm/conda/envs/huy/bin/python \
   --wrist-camera --contextualize --rank-batch-sizes 10 10 10 \
   --epochs 5 --cluster-size 2 --tcow-lr 1e-6 --wrist-lr 1e-6 --flow-lr 1e-5 \
   --lr-schedule cosine --warmup-fraction .05 --min-lr-ratio .1 --seed 0 \
-  --output "$runs/checkpoints/e17_e2e" \
-  2>&1 | tee "$runs/logs/e17_e2e.log"
+  --output "$runs/checkpoints/e18_e2e" \
+  2>&1 | tee "$runs/logs/e18_e2e.log"
 ```
 
-Run in `huy:e17_e2e` after checking GPU availability and fresh output/cache
+Run in `huy:e18_e2e` after checking GPU availability and fresh output/cache
 directories. No validation or separate smoke run; progress reports ETA and LR.
 
 ## Closed loop

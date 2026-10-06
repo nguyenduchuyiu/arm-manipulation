@@ -203,7 +203,9 @@ decoder and FM remain trainable.
 Both trainers use native PyTorch DataLoader workers and LeRobot/TorchCodec
 decoding. Compressed train videos are cached once in RAM; DDP ranks share that
 cache and decode only their requested history/current-wrist frames. Each rank
-uses two workers and prefetch factor two. Global batches and weighted short
+uses native worker/prefetch controls: single GPU has two workers/factor two;
+DDP has one worker/factor one and unpinned CPU batches to fit its RAM budget.
+Global batches and weighted short
 tails remain synchronized; manual episode/cluster prefetch has been removed.
 
 Training skips validation and automatic rollout. Use the completed `final.pt`

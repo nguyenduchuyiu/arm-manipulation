@@ -76,7 +76,7 @@ def main():
     torch.set_num_threads(2)
     torch.set_float32_matmul_precision("high")
     torch.cuda.set_device(local_rank)
-    dist.init_process_group("nccl", timeout=timedelta(hours=2),
+    dist.init_process_group("nccl", timeout=timedelta(minutes=5),
                             device_id=torch.device("cuda", local_rank))
     rng = np.random.default_rng(args.seed)
     torch.manual_seed(args.seed)
@@ -110,7 +110,8 @@ def main():
             "validation_enabled": False,
             "visual_input": "rgb", "tcow_input_channels": 4,
             "video_backend": "lerobot/torchcodec", "loader": "torch.utils.data.DataLoader",
-            "num_workers_per_rank": 2, "prefetch_factor": 2,
+            "num_workers_per_rank": 1, "prefetch_factor": 1, "pin_memory": False,
+            "distributed_timeout_s": 300,
             "contextualize": args.contextualize,
             "context_tokens": 365 if args.contextualize else (701 if args.wrist_camera else 301),
         }, indent=2) + "\n")
@@ -172,6 +173,11 @@ def main():
     model = model.cuda()
     if args.flow_only:
         model.tcow.requires_grad_(False)
+    # CLS/view-token gradients can inherit a full sequence stride on singleton
+    # dimensions. Materialize their canonical layout before DDP buckets see it.
+    for parameter in model.parameters():
+        if parameter.requires_grad and parameter.ndim == 3 and parameter.shape[:2] == (1, 1):
+            parameter.register_hook(lambda grad: grad.clone(memory_format=torch.contiguous_format))
     # FM is unused on mask-only batches; the used parameter set changes each step.
     engine = DistributedDataParallel(model, device_ids=[local_rank],
                                      find_unused_parameters=not args.flow_only, broadcast_buffers=False,
@@ -220,11 +226,15 @@ def main():
             "compressed_gib": compressed_gib, "shared_across_ranks": True}, indent=2) + "\n")
         print(json.dumps({"event": "video_cache", "videos": len(videos), "compressed_gib": compressed_gib,
                           "backend": "lerobot/torchcodec", "shared_across_ranks": True,
-                          "num_workers_per_rank": 2, "prefetch_factor": 2}), flush=True)
+                          "num_workers_per_rank": 1, "prefetch_factor": 1,
+                          "pin_memory": False}), flush=True)
     dataset = ActionChunkDataset(args.data, [row for rows in clusters for row in rows],
                                  samples, videos, args.flow_only, args.wrist_camera)
     rank_batches = [rank_batch(batch, args.rank_batch_sizes, rank)[0] for batch in global_batches]
-    dataloader = make_dataloader(dataset, rank_batches, args.seed + rank, pin_memory=True)
+    # Float RGB/query/mask batches are ~0.6 GiB per rank. Keep one queued batch
+    # and avoid CUDA host-pinning threads under the server's memory.high limit.
+    dataloader = make_dataloader(dataset, rank_batches, args.seed + rank, pin_memory=False,
+                                 num_workers=1, prefetch_factor=1)
     step, wait_s = 0, 0.0
     history, checked_phases = [], set()
     started = time.perf_counter()
@@ -236,7 +246,7 @@ def main():
             waiting = time.perf_counter()
             tensors = next(iterator)
             wait_s += time.perf_counter() - waiting
-            tensors = [tensor.to("cuda", non_blocking=True) for tensor in tensors]
+            tensors = [tensor.to("cuda") for tensor in tensors]
             rgbd, query, truth, proprio, action, valid = tensors[:6]
             wrist = tensors[6] if args.wrist_camera else None
             del tensors
@@ -309,7 +319,8 @@ def main():
                 elapsed = time.perf_counter() - started
                 print(json.dumps({"event": "training_progress", "step": step, "steps": total_steps,
                                   "elapsed_s": elapsed, "seconds_per_step": elapsed / step,
-                                  "eta_hours": (total_steps - step) * elapsed / step / 3600,
+                                          "eta_hours": (total_steps - step) * elapsed / step / 3600,
+                                          "data_wait_s": wait_s,
                                   "lrs": {g["name"]: g["lr"] for g in optimizer.param_groups},
                                   "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30}), flush=True)
             # Release the completed CUDA batch before transferring another one.
