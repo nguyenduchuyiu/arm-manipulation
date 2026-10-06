@@ -5,6 +5,7 @@ import argparse
 import faulthandler
 import json
 import logging
+import math
 from pathlib import Path
 import resource
 import signal
@@ -59,6 +60,8 @@ def save_checkpoint(path, model, step, args):
 def argument_parser(distributed=False):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, required=True)
+    p.add_argument("--base-demonstrations-only", action="store_true",
+                   help="train expert parent episodes without attached perturbation demonstrations")
     p.add_argument("--weights", type=Path, required=True)
     p.add_argument("--flow-weights", type=Path, required=True,
                    help="prepared pretrained action expert.safetensors")
@@ -74,6 +77,10 @@ def argument_parser(distributed=False):
                    help="verify mask and action gradients; DDP eight-step mode crosses a cluster boundary")
     p.add_argument("--tcow-lr", type=float, default=2e-5)
     p.add_argument("--flow-lr", type=float, default=1e-4)
+    p.add_argument("--wrist-lr", type=float, help="wrist backbone LR; defaults to flow LR")
+    p.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant")
+    p.add_argument("--warmup-fraction", type=float, default=.05)
+    p.add_argument("--min-lr-ratio", type=float, default=.1)
     p.add_argument("--mask-loss-weight", type=float, default=.2)
     p.add_argument("--device", choices=("cuda", "mps"), default="cuda")
     p.add_argument("--flow-only", action="store_true",
@@ -90,6 +97,40 @@ def argument_parser(distributed=False):
     return p
 
 
+def make_optimizer(model, args):
+    wrist = list(model.flow.wrist_encoder.parameters()) if model.flow.wrist_enabled else []
+    wrist_ids = {id(p) for p in wrist}
+    groups = [{"name": "flow", "params": [p for p in model.flow.parameters()
+               if p.requires_grad and id(p) not in wrist_ids], "lr": args.flow_lr,
+               "betas": (.9, .95), "weight_decay": 1e-10}]
+    if any(p.requires_grad for p in wrist):
+        groups.append({"name": "wrist", "params": [p for p in wrist if p.requires_grad],
+                       "lr": args.wrist_lr if args.wrist_lr is not None else args.flow_lr,
+                       "betas": (.9, .95), "weight_decay": 1e-10})
+    if not args.flow_only:
+        groups.insert(0, {"name": "tcow", "params": [p for p in model.tcow.parameters()
+                          if p.requires_grad], "lr": args.tcow_lr})
+    if any(group["lr"] <= 0 for group in groups):
+        raise ValueError("learning rates must be positive")
+    return torch.optim.AdamW(groups)
+
+
+def make_scheduler(optimizer, args, total_steps):
+    if total_steps < 1 or not 0 <= args.warmup_fraction < 1 or not 0 < args.min_lr_ratio <= 1:
+        raise ValueError("invalid step count, warmup fraction or minimum LR ratio")
+    warmup = max(1, int(total_steps * args.warmup_fraction)) if args.warmup_fraction else 0
+
+    def factor(index):
+        if args.lr_schedule == "constant":
+            return 1.
+        if index < warmup:
+            return (index + 1) / warmup
+        progress = min(1., max(0., (index - warmup) / max(1, total_steps - warmup - 1)))
+        return args.min_lr_ratio + (1 - args.min_lr_ratio) * .5 * (1 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
 def main():
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     faulthandler.dump_traceback_later(120, repeat=True)
@@ -99,8 +140,8 @@ def main():
     if args.wrist_weights and not args.wrist_weights.is_file():
         raise FileNotFoundError(args.wrist_weights)
     if args.contextualize:
-        if not (args.flow_only and args.wrist_camera and args.freeze_wrist_encoder and args.wrist_weights):
-            raise ValueError("contextualization requires frozen TCOW and a frozen pretrained wrist ViT")
+        if not (args.wrist_camera and args.wrist_weights):
+            raise ValueError("contextualization requires a pretrained wrist ViT")
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable")
     if args.device == "mps" and not torch.backends.mps.is_available():
@@ -127,7 +168,8 @@ def main():
         raise ValueError("cluster size, epochs, and batch size must be positive")
     train_rows, _ = split_rows(args.data)
     train_parents = len(train_rows)
-    train_rows = expand_demonstrations(args.data, train_rows)
+    train_rows = ([{**row, "parent_path": row["path"], "demonstration_id": "base"} for row in train_rows]
+                  if args.base_demonstrations_only else expand_demonstrations(args.data, train_rows))
     if args.wrist_camera:
         require_wrist_data(args.data, train_rows)
     rng = np.random.default_rng(args.seed)
@@ -202,11 +244,7 @@ def main():
         model.tcow.requires_grad_(False)
     losses = (MyLosses(config["train_args"], logging.getLogger("tcow"), "train")
               if config else None)
-    groups = [{"params": [p for p in model.flow.parameters() if p.requires_grad], "lr": args.flow_lr,
-               "betas": (.9, .95), "weight_decay": 1e-10}]
-    if not args.flow_only:
-        groups.insert(0, {"params": model.tcow.parameters(), "lr": args.tcow_lr})
-    optimizer = torch.optim.AdamW(groups)
+    optimizer = make_optimizer(model, args)
     # The exact step count is known after indexing action_valid, before video decoding.
     # Keep the original cluster/sample order; only image loading changes.
     plans = [[[(end, has_action) for end, has_action in sample_index(args.data / row["path"])
@@ -215,6 +253,7 @@ def main():
     samples, batches, epoch_ends = training_batches(
         plans, args.epochs, args.batch_size, rng, args.smoke_steps)
     total_steps = len(batches)
+    scheduler = make_scheduler(optimizer, args, total_steps)
     total_samples = len(samples)
     total_action = sum(active for _episode, _end, active in samples)
     videos, compressed_gib = cache_videos(args.data, [row for rows in clusters for row in rows], args.wrist_camera)
@@ -326,6 +365,7 @@ def main():
                                            config["train_args"].gradient_clip if config else 1.0,
                                            error_if_nonfinite=True)
             optimizer.step()
+            scheduler.step()
             step += 1
             if args.smoke_steps:
                 torch.cuda.synchronize() if device == "cuda" else torch.mps.synchronize()

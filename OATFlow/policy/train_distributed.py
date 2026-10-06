@@ -31,7 +31,7 @@ from OATFlow.policy.tracking import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
 )
 from OATFlow.policy.train import (
-    argument_parser, save_checkpoint,
+    argument_parser, make_optimizer, make_scheduler, save_checkpoint,
 )
 
 
@@ -104,8 +104,8 @@ def main():
     if args.wrist_weights and not args.wrist_weights.is_file():
         raise FileNotFoundError(args.wrist_weights)
     if args.contextualize:
-        if not (args.flow_only and args.wrist_camera and args.freeze_wrist_encoder and args.wrist_weights):
-            raise ValueError("contextualization requires frozen TCOW and a frozen pretrained wrist ViT")
+        if not (args.wrist_camera and args.wrist_weights):
+            raise ValueError("contextualization requires a pretrained wrist ViT")
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -132,7 +132,8 @@ def main():
     torch.manual_seed(args.seed)
     train_rows, _ = split_rows(args.data)
     train_parents = len(train_rows)
-    train_rows = expand_demonstrations(args.data, train_rows)
+    train_rows = ([{**row, "parent_path": row["path"], "demonstration_id": "base"} for row in train_rows]
+                  if args.base_demonstrations_only else expand_demonstrations(args.data, train_rows))
     if args.wrist_camera:
         require_wrist_data(args.data, train_rows)
     train_rows = [train_rows[i] for i in rng.permutation(len(train_rows))]
@@ -225,11 +226,7 @@ def main():
                                      gradient_as_bucket_view=True)
     torch.manual_seed(args.seed + rank)
     losses = MyLosses(config["train_args"], logging.getLogger("tcow"), "train")
-    groups = [{"params": [p for p in model.flow.parameters() if p.requires_grad], "lr": args.flow_lr,
-               "betas": (.9, .95), "weight_decay": 1e-10}]
-    if not args.flow_only:
-        groups.insert(0, {"params": model.tcow.parameters(), "lr": args.tcow_lr})
-    optimizer = torch.optim.AdamW(groups)
+    optimizer = make_optimizer(model, args)
     plans = [[[(end, action) for end, action in sample_index(args.data / row["path"])
                if action or not args.flow_only] for row in rows] for rows in
              tqdm(clusters, desc="index episodes", unit="cluster", file=sys.stdout, disable=rank != 0)]
@@ -238,6 +235,7 @@ def main():
             (sum(not action for plan in cluster for _, action in plan),
              sum(action for plan in cluster for _, action in plan))) for cluster in plans)
     total_steps = args.epochs * steps_per_epoch
+    scheduler = make_scheduler(optimizer, args, total_steps)
     if resume_step % steps_per_epoch:
         raise ValueError("resume requires an epoch boundary with the same batching")
     completed_epochs = resume_step // steps_per_epoch
@@ -253,6 +251,9 @@ def main():
                           "trainable_flow": sum(p.numel() for p in model.flow.parameters() if p.requires_grad),
                           "trainable_wrist_encoder": sum(p.numel() for p in model.flow.wrist_encoder.parameters()
                                                          if p.requires_grad) if args.wrist_camera else 0,
+                          "lr_schedule": args.lr_schedule,
+                          "warmup_steps": max(1, int(total_steps * args.warmup_fraction)) if args.warmup_fraction else 0,
+                          "peak_lrs": {g["name"]: g["initial_lr"] for g in optimizer.param_groups},
                           "resume_step": resume_step, "completed_epochs": completed_epochs,
                           "total_epochs": completed_epochs + args.epochs,
                           "fresh_flow": False, "flow_type": model.flow.flow_type}), flush=True)
@@ -324,7 +325,7 @@ def main():
                     with torch.autocast("cuda", dtype=torch.bfloat16):
                         logits, velocity, latent, context = engine(rgbd, query, proprio, noisy, tau, wrist=wrist)
                         action_loss = (((velocity.float() - target).square() * valid[:, :, None]).sum()
-                                       * (world * bool(count)) / (valid_count * 6)) if is_action else logits.new_zeros(())
+                                       * (world * bool(count)) / (valid_count * action.shape[-1])) if is_action else logits.new_zeros(())
                     mask_loss = (logits.sum() * 0 if args.flow_only else
                                  original_mask_loss(losses, logits, truth,
                                                     (resume_step + step) / max(resume_step + total_steps, 1))
@@ -368,6 +369,7 @@ def main():
                     torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
                                                    error_if_nonfinite=True)
                     optimizer.step()
+                    scheduler.step()
                     step += 1
                     logs = torch.stack((action_loss.detach(), mask_loss.detach()))
                     dist.all_reduce(logs)
@@ -375,6 +377,13 @@ def main():
                     progress.update()
                     progress.set_postfix(action=f"{logs[0].item():.3f}", mask=f"{logs[1].item():.3f}",
                                          chunks=len(batch) if is_action else 0, refresh=False)
+                    if rank == 0 and step % 25 == 0:
+                        elapsed = time.perf_counter() - started
+                        print(json.dumps({"event": "training_progress", "step": step, "steps": total_steps,
+                                          "elapsed_s": elapsed, "seconds_per_step": elapsed / step,
+                                          "eta_hours": (total_steps - step) * elapsed / step / 3600,
+                                          "lrs": {g["name"]: g["lr"] for g in optimizer.param_groups},
+                                          "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30}), flush=True)
                     # Release RGB-D clips and full-video masks before allocating the next batch.
                     del samples, rgbd, query, truth, proprio, action, valid, wrist
                     del noisy, tau, target, logits, velocity, latent, context

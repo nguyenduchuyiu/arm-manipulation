@@ -77,6 +77,41 @@ Distributed training uses `python -m torch.distributed.run --standalone
 GPU selection and the same required weight/data flags. Its rank batch sizes are
 set with `--rank-batch-sizes`; keep total CPU affinity within eight cores.
 
+For end-to-end joint-delta training, omit `--flow-only` and
+`--freeze-wrist-encoder`. `--contextualize` also supports trainable backbones.
+Use `--base-demonstrations-only` to exclude attached perturbation demos.
+Separate peak learning rates and a schedule are selected with
+`--tcow-lr 1e-6 --wrist-lr 1e-6 --flow-lr 1e-5
+--lr-schedule cosine --warmup-fraction .05 --min-lr-ratio .1`.
+Warmup and cosine share the exact optimizer-update count across all epochs;
+the last update uses 10% of each peak LR. Default runs retain constant LR.
+
+```bash
+cd /mnt/disk1/backup_user/25thanh.tk/arm-manipulation
+base=/mnt/disk1/backup_user/hoang.pm/huy/arm-manipiulation
+runs=/mnt/disk1/backup_user/25thanh.tk/memory_occlusion
+export CUDA_VISIBLE_DEVICES=0,3,4
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+set -o pipefail
+taskset -c 56-63 /mnt/disk1/backup_user/hoang.pm/conda/envs/huy/bin/python \
+  -u -m torch.distributed.run --standalone --nproc_per_node=3 \
+  --module OATFlow.policy.train_distributed \
+  --data "$runs/datasets/memory_occlusion_multiview_25hz_delta_v1" \
+  --base-demonstrations-only \
+  --weights "$base/checkpoints/tcow_published_kubric/checkpoint.pth" \
+  --config-checkpoint "$base/checkpoints/tcow_upstream_25hz_camera50_20260929/best.pth" \
+  --flow-weights "$base/checkpoints/memory_occlusion_action_expert_init_20261001/expert.safetensors" \
+  --wrist-weights "$runs/checkpoints/memory_occlusion_wrist_vit_base_imagenet1k_v1/vit_b_16-c867db91.pth" \
+  --wrist-camera --contextualize --rank-batch-sizes 10 10 10 \
+  --epochs 5 --cluster-size 2 --tcow-lr 1e-6 --wrist-lr 1e-6 --flow-lr 1e-5 \
+  --lr-schedule cosine --warmup-fraction .05 --min-lr-ratio .1 --seed 0 \
+  --output "$runs/checkpoints/e16_e2e" \
+  2>&1 | tee "$runs/logs/e16_e2e.log"
+```
+
+Run in `huy:e16_e2e` after checking GPU availability and fresh output/cache
+directories. No validation or separate smoke run; progress reports ETA and LR.
+
 ## Closed loop
 
 Run separately after a checkpoint is complete. The frame budget below includes
