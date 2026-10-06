@@ -42,8 +42,11 @@ The single-GPU loader copies compressed train MP4s once into a dedicated
 only requested frames through LeRobot's eight-entry decoder cache. Native
 DataLoader controls batching, collation, pinning and prefetching (factor 2 per
 worker, four batches total). History is `round(linspace(0,t,30))`; sampling order,
-H25 labels and short batches are preserved. The existing distributed loader
-uses per-cluster shared decoded buffers.
+H25 labels and short batches are preserved. Distributed training uses this same
+DataLoader/LeRobot path, with two workers per rank and one compressed video cache
+shared across ranks. Global batches are split into explicit rank batch sizes;
+an empty rank gets a zero-weight dummy at a short tail. No manual episode
+prefetch queue, decoder thread pool or shared decoded clusters remain.
 
 ## Train on 3090
 
@@ -90,7 +93,7 @@ the last update uses 10% of each peak LR. Default runs retain constant LR.
 cd /mnt/disk1/backup_user/25thanh.tk/arm-manipulation
 base=/mnt/disk1/backup_user/hoang.pm/huy/arm-manipiulation
 runs=/mnt/disk1/backup_user/25thanh.tk/memory_occlusion
-export CUDA_VISIBLE_DEVICES=0,3,4
+export CUDA_VISIBLE_DEVICES=0,1,6
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 set -o pipefail
 taskset -c 56-63 /mnt/disk1/backup_user/hoang.pm/conda/envs/huy/bin/python \
@@ -105,11 +108,11 @@ taskset -c 56-63 /mnt/disk1/backup_user/hoang.pm/conda/envs/huy/bin/python \
   --wrist-camera --contextualize --rank-batch-sizes 10 10 10 \
   --epochs 5 --cluster-size 2 --tcow-lr 1e-6 --wrist-lr 1e-6 --flow-lr 1e-5 \
   --lr-schedule cosine --warmup-fraction .05 --min-lr-ratio .1 --seed 0 \
-  --output "$runs/checkpoints/e16_e2e" \
-  2>&1 | tee "$runs/logs/e16_e2e.log"
+  --output "$runs/checkpoints/e17_e2e" \
+  2>&1 | tee "$runs/logs/e17_e2e.log"
 ```
 
-Run in `huy:e16_e2e` after checking GPU availability and fresh output/cache
+Run in `huy:e17_e2e` after checking GPU availability and fresh output/cache
 directories. No validation or separate smoke run; progress reports ETA and LR.
 
 ## Closed loop

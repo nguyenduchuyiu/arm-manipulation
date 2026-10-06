@@ -200,9 +200,11 @@ convention adapted to noise at t=0. Inference uses ten Euler steps.
 `--flow-only` freezes TCOW and its mask head, drops context-only samples and
 mask loss. `--freeze-wrist-encoder` also freezes wrist vision; adapters, context
 decoder and FM remain trainable.
-DDP uses a separate loader process, temporary shared RAM arrays, packed masks
-and sampled wrist frames. It prefetches the next cluster and releases completed
-clusters; shared buffers are capped at 28 GiB.
+Both trainers use native PyTorch DataLoader workers and LeRobot/TorchCodec
+decoding. Compressed train videos are cached once in RAM; DDP ranks share that
+cache and decode only their requested history/current-wrist frames. Each rank
+uses two workers and prefetch factor two. Global batches and weighted short
+tails remain synchronized; manual episode/cluster prefetch has been removed.
 
 Training skips validation and automatic rollout. Use the completed `final.pt`
 for a separate closed-loop test; test splits do not select checkpoints.

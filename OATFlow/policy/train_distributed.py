@@ -1,18 +1,14 @@
 """Train the same joint policy with torchrun on up to three GPUs."""
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import timedelta
 import faulthandler
 import json
 import logging
-import multiprocessing
 import os
 from pathlib import Path
 import resource
-import shutil
 import signal
 import sys
 import time
-from threading import Lock
 
 import numpy as np
 import torch
@@ -21,8 +17,10 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 from OATFlow.policy.data import (
-    expand_demonstrations, load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
-    training_samples,
+    expand_demonstrations, policy_statistics, require_wrist_data, sample_index, split_rows,
+)
+from OATFlow.policy.loader import (
+    ActionChunkDataset, cache_videos, make_dataloader, release_videos, training_batches,
 )
 from OATFlow.policy.model import (
     FlowMatchingHead, OATFlowPolicy, checkpoint_uses_depth, load_training_tracker, set_tracker_input,
@@ -41,54 +39,6 @@ def rank_batch(batch, sizes, rank):
     # A short final batch still needs one forward/backward on every rank.
     # Its dummy sample gets zero weight, so no training sample is duplicated.
     return (items if items else batch[:1]), len(items)
-
-
-def cache_cluster(data_root, rows, destination, flow_only=False, require_wrist=False):
-    """Decode once into temporary RAM files that every rank can map."""
-    destination.mkdir()
-    occupied = sum(p.stat().st_size for p in destination.parent.rglob("*.npy"))
-    lock = Lock()
-
-    def cache_one(item):
-        nonlocal occupied
-        index, row = item
-        episode = (load_policy_episode if flow_only else load_joint_episode)(
-            data_root / row["path"], require_wrist=require_wrist, training_cache=True)
-        arrays, scalars = {}, {}
-        for key, value in episode.items():
-            if isinstance(value, np.ndarray):
-                with lock:
-                    occupied += value.nbytes
-                    if occupied > 28 * 2**30:
-                        raise MemoryError("shared episode buffers exceed 28 GiB; reduce cluster size")
-                path = destination / f"{index}_{key}.npy"
-                mapped = np.lib.format.open_memmap(path, mode="w+", dtype=value.dtype, shape=value.shape)
-                mapped[:] = value
-                mapped.flush()
-                mapped._mmap.close()
-                arrays[key] = str(path)
-            else:
-                scalars[key] = value
-        return row, scalars, arrays
-
-    with ThreadPoolExecutor(max_workers=min(4, len(rows))) as decoders:
-        descriptors = list(tqdm(decoders.map(cache_one, enumerate(rows)), total=len(rows),
-                                desc="load shared episodes", unit="episode", mininterval=5,
-                                file=sys.stdout))
-    tqdm.write(json.dumps({"event": "shared_cluster_ready", "episodes": len(rows),
-                           "shared_buffers_gib": occupied / 2**30}), file=sys.stdout)
-    return descriptors
-
-
-def release_cluster(episodes, destination, rank):
-    for _row, episode in episodes:
-        for value in episode.values():
-            if isinstance(value, np.memmap):
-                value._mmap.close()
-    dist.barrier()
-    if rank == 0:
-        shutil.rmtree(destination)
-    dist.barrier()
 
 
 def main():
@@ -159,6 +109,8 @@ def main():
             "validation_episodes": 0,
             "validation_enabled": False,
             "visual_input": "rgb", "tcow_input_channels": 4,
+            "video_backend": "lerobot/torchcodec", "loader": "torch.utils.data.DataLoader",
+            "num_workers_per_rank": 2, "prefetch_factor": 2,
             "contextualize": args.contextualize,
             "context_tokens": 365 if args.contextualize else (701 if args.wrist_camera else 301),
         }, indent=2) + "\n")
@@ -230,11 +182,12 @@ def main():
     plans = [[[(end, action) for end, action in sample_index(args.data / row["path"])
                if action or not args.flow_only] for row in rows] for rows in
              tqdm(clusters, desc="index episodes", unit="cluster", file=sys.stdout, disable=rank != 0)]
-    steps_per_epoch = sum(
-        sum((count + args.batch_size - 1) // args.batch_size for count in
-            (sum(not action for plan in cluster for _, action in plan),
-             sum(action for plan in cluster for _, action in plan))) for cluster in plans)
-    total_steps = args.epochs * steps_per_epoch
+    samples, global_batches, epoch_ends = training_batches(
+        plans, args.epochs, args.batch_size, rng, args.smoke_steps)
+    steps_per_epoch = epoch_ends[0]
+    if args.smoke_steps:
+        global_batches = global_batches[:args.smoke_steps]
+    total_steps = len(global_batches)
     scheduler = make_scheduler(optimizer, args, total_steps)
     if resume_step % steps_per_epoch:
         raise ValueError("resume requires an epoch boundary with the same batching")
@@ -257,181 +210,159 @@ def main():
                           "resume_step": resume_step, "completed_epochs": completed_epochs,
                           "total_epochs": completed_epochs + args.epochs,
                           "fresh_flow": False, "flow_type": model.flow.flow_type}), flush=True)
+    publication = [cache_videos(args.data, [row for rows in clusters for row in rows], args.wrist_camera)
+                   if rank == 0 else None]
+    dist.broadcast_object_list(publication, src=0)
+    videos, compressed_gib = publication[0]
+    if rank == 0:
+        (args.output / "video_cache.json").write_text(json.dumps({
+            "directory": str(Path(next(iter(videos.values()))).parent),
+            "compressed_gib": compressed_gib, "shared_across_ranks": True}, indent=2) + "\n")
+        print(json.dumps({"event": "video_cache", "videos": len(videos), "compressed_gib": compressed_gib,
+                          "backend": "lerobot/torchcodec", "shared_across_ranks": True,
+                          "num_workers_per_rank": 2, "prefetch_factor": 2}), flush=True)
+    dataset = ActionChunkDataset(args.data, [row for rows in clusters for row in rows],
+                                 samples, videos, args.flow_only, args.wrist_camera)
+    rank_batches = [rank_batch(batch, args.rank_batch_sizes, rank)[0] for batch in global_batches]
+    dataloader = make_dataloader(dataset, rank_batches, args.seed + rank, pin_memory=True)
     step, wait_s = 0, 0.0
     history, checked_phases = [], set()
     started = time.perf_counter()
     torch.cuda.reset_peak_memory_stats()
-
-    shared_root = Path("/dev/shm") / args.output.name
+    iterator = iter(dataloader)
+    with tqdm(total=total_steps, desc="train TCOW + flow (DDP)", unit="step", mininterval=5,
+              file=sys.stdout, disable=rank != 0) as progress:
+        for batch in global_batches:
+            waiting = time.perf_counter()
+            tensors = next(iterator)
+            wait_s += time.perf_counter() - waiting
+            tensors = [tensor.to("cuda", non_blocking=True) for tensor in tensors]
+            rgbd, query, truth, proprio, action, valid = tensors[:6]
+            wrist = tensors[6] if args.wrist_camera else None
+            del tensors
+            _, count = rank_batch(batch, args.rank_batch_sizes, rank)
+            is_action = samples[batch[0]][2]
+            model.train()
+            if args.flow_only:
+                model.tcow.eval()
+            noisy, tau, target = model.flow.training_path(action) if is_action else (None, None, None)
+            # DDP averages gradients across ranks. Weight by the actual sample/valid-step
+            # counts, including short batches, to retain the global action-loss mean.
+            valid_count = valid.sum().float() * bool(count)
+            dist.all_reduce(valid_count)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                logits, velocity, latent, context = engine(rgbd, query, proprio, noisy, tau, wrist=wrist)
+                action_loss = (((velocity.float() - target).square() * valid[:, :, None]).sum()
+                               * (world * bool(count)) / (valid_count * action.shape[-1])) if is_action else logits.new_zeros(())
+            mask_loss = (logits.sum() * 0 if args.flow_only else
+                         original_mask_loss(losses, logits, truth,
+                                            (resume_step + step) / max(resume_step + total_steps, 1))
+                         * (world * count / len(batch)))
+            total = action_loss + args.mask_loss_weight * mask_loss
+            if not torch.isfinite(total):
+                raise ValueError(f"nonfinite loss on rank {rank}")
+            optimizer.zero_grad(set_to_none=True)
+            total.backward()
+            model._latent = None
+            if is_action not in checked_phases:
+                patch = model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.grad
+                head = model.tcow.seeker.tracker_post_linear.weight.grad
+                out = model.flow.output.weight.grad
+                if args.flow_only and (patch is not None or head is not None or out is None or
+                                       not torch.isfinite(out).all() or not out.abs().sum()):
+                    raise AssertionError("invalid frozen TCOW / trainable FM gradients")
+                if not is_action and out is not None:
+                    raise AssertionError("mask-only batch created FM gradients")
+                values = [float(p.float().abs().sum()) if p is not None else None
+                          for p in (patch, head, out)]
+                required = values if is_action else values[:2]
+                if not args.flow_only and any(v is None or not np.isfinite(v) or v <= 0 for v in required):
+                    raise AssertionError(f"missing or nonfinite gradients on rank {rank}")
+                wrist_grad = model.flow.wrist_encoder.patch.weight.grad if args.wrist_camera else None
+                wrist_value = float(wrist_grad.float().abs().sum()) if wrist_grad is not None else None
+                if args.freeze_wrist_encoder and any(p.grad is not None for p in model.flow.wrist_encoder.parameters()):
+                    raise AssertionError("frozen wrist encoder created gradients")
+                if args.wrist_camera and not args.freeze_wrist_encoder and is_action and (wrist_value is None or not np.isfinite(wrist_value) or wrist_value <= 0):
+                    raise AssertionError(f"missing or nonfinite wrist gradient on rank {rank}")
+                if not is_action and wrist_grad is not None:
+                    raise AssertionError("mask-only batch created wrist gradients")
+                if rank == 0:
+                    print(json.dumps({"event": "gradient_smoke", "action_phase": is_action,
+                                      "latent_shape": list(latent.shape),
+                                      "context_shape": list(context.shape) if context is not None else None,
+                                      "patch_grad": values[0], "mask_head_grad": values[1],
+                                      "flow_grad": values[2], "wrist_grad": wrist_value,
+                                      "frozen_wrist_encoder": args.freeze_wrist_encoder}), flush=True)
+                checked_phases.add(is_action)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
+                                           error_if_nonfinite=True)
+            optimizer.step()
+            scheduler.step()
+            step += 1
+            logs = torch.stack((action_loss.detach(), mask_loss.detach()))
+            dist.all_reduce(logs)
+            logs /= world
+            progress.update()
+            progress.set_postfix(action=f"{logs[0].item():.3f}", mask=f"{logs[1].item():.3f}",
+                                 chunks=len(batch) if is_action else 0, refresh=False)
+            if rank == 0 and step % 25 == 0:
+                elapsed = time.perf_counter() - started
+                print(json.dumps({"event": "training_progress", "step": step, "steps": total_steps,
+                                  "elapsed_s": elapsed, "seconds_per_step": elapsed / step,
+                                  "eta_hours": (total_steps - step) * elapsed / step / 3600,
+                                  "lrs": {g["name"]: g["lr"] for g in optimizer.param_groups},
+                                  "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30}), flush=True)
+            # Release the completed CUDA batch before transferring another one.
+            del rgbd, query, truth, proprio, action, valid, wrist
+            del noisy, tau, target, logits, velocity, latent, context
+            del action_loss, mask_loss, total
+            if args.smoke_steps and step >= args.smoke_steps:
+                # Compare an updated action projection and TCOW patch checksum across ranks.
+                signature = torch.stack((model.flow.output.weight.detach().double().sum(),
+                                         model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.detach().double().sum()))
+                signatures = [torch.zeros_like(signature) for _ in range(world)]
+                dist.all_gather(signatures, signature)
+                for other in signatures[1:]:
+                    torch.testing.assert_close(signatures[0], other, rtol=0, atol=0)
+                memory = torch.tensor([torch.cuda.max_memory_reserved() / 2**30,
+                                       resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20], device="cuda")
+                memories = [torch.zeros_like(memory) for _ in range(world)]
+                dist.all_gather(memories, memory)
+                if rank == 0:
+                    report = {"event": "smoke_complete", "steps": step, "world_size": world,
+                              "rank_batch_sizes": args.rank_batch_sizes, "synchronized": True,
+                              "expected_loss_phases_passed": checked_phases == ({True} if args.flow_only else {False, True}),
+                              "frozen_tcow": args.flow_only,
+                              "per_rank_peak_vram_cpu_rss_gib": [m.tolist() for m in memories]}
+                    (args.output / "smoke.json").write_text(json.dumps(report, indent=2) + "\n")
+                    print(json.dumps(report), flush=True)
+                del iterator, dataloader
+                dist.barrier()
+                if rank == 0:
+                    release_videos(videos)
+                dist.barrier()
+                dist.destroy_process_group()
+                return
+            if step in epoch_ends:
+                dist.barrier()
+                if rank == 0:
+                    save_checkpoint(args.output / "latest.pt", model, resume_step + step, args)
+                    record = {"step": resume_step + step, "resumed_run_step": step,
+                              "clusters_done": (completed_epochs + epoch_ends.index(step) + 1) * len(clusters),
+                              "epoch": completed_epochs + epoch_ends.index(step) + 1,
+                              "action_loss": float(logs[0]), "mask_loss": float(logs[1]),
+                              "elapsed_s": time.perf_counter() - started, "prefetch_wait_s": wait_s,
+                              "compressed_video_gib": compressed_gib,
+                              "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30,
+                              "peak_cpu_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20}
+                    history.append(record)
+                    (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+                    tqdm.write(json.dumps(record), file=sys.stdout)
+                dist.barrier()
+    del iterator, dataloader
+    dist.barrier()
     if rank == 0:
-        shared_root.mkdir(mode=0o700)
-    # Video decoding must not share Python's interpreter lock with rank 0's training loop.
-    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn")) as loader:
-        future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only,
-                                args.wrist_camera)
-                  if rank == 0 else None)
-        with tqdm(total=args.smoke_steps or total_steps, desc="train TCOW + flow (DDP)",
-                  unit="step", mininterval=5, file=sys.stdout, disable=rank != 0) as progress:
-            for cluster_index in range(len(clusters) * args.epochs):
-                cluster_id = cluster_index % len(clusters)
-                waiting = time.perf_counter()
-                publication = [future.result() if rank == 0 else None]
-                dist.broadcast_object_list(publication, src=0)
-                episodes = [(row, {**scalars, **{key: np.load(path, mmap_mode="r")
-                                               for key, path in arrays.items()}})
-                            for row, scalars, arrays in publication[0]]
-                wait_s += time.perf_counter() - waiting
-                future = (loader.submit(cache_cluster, args.data,
-                                        clusters[(cluster_index + 1) % len(clusters)],
-                                        shared_root / str(cluster_index + 1), args.flow_only, args.wrist_camera)
-                          if rank == 0 and
-                          (not args.smoke_steps or (cluster_index + 1) * 4 < args.smoke_steps) and
-                          cluster_index + 1 < len(clusters) * args.epochs else None)
-                items = [(i, end, action) for i, plan in enumerate(plans[cluster_id]) for end, action in plan]
-                for i, (_row, episode) in enumerate(episodes):
-                    actual = [(end, action) for end, action in training_samples(episode)
-                              if action or not args.flow_only]
-                    if actual != plans[cluster_id][i]:
-                        raise ValueError(f"indexed samples changed: {episode['name']}")
-                phases = []
-                for action_phase in (False, True):
-                    phase_items = [item for item in items if item[2] == action_phase]
-                    rng.shuffle(phase_items)
-                    phases.append([phase_items[i:i + args.batch_size]
-                                   for i in range(0, len(phase_items), args.batch_size)])
-                batches = phases[0] + phases[1]
-                rng.shuffle(batches)
-                if args.smoke_steps:
-                    # Exercise both branches, including a partial tail batch with an empty rank.
-                    batches = ([phases[1][0], phases[1][1], phases[1][-1], phases[1][-1]] if args.flow_only else
-                               [phases[0][0], phases[1][0], phases[0][-1], phases[1][-1]])
-                for batch in batches:
-                    batch_items, count = rank_batch(batch, args.rank_batch_sizes, rank)
-                    samples = [training_clip(episodes[i][1], end, action, "cuda", include_wrist=args.wrist_camera)
-                               for i, end, action in batch_items]
-                    tensors = [torch.cat(parts) for parts in zip(*samples)]
-                    rgbd, query, truth, proprio, action, valid = tensors[:6]
-                    wrist = tensors[6] if args.wrist_camera else None
-                    del tensors
-                    is_action = batch[0][2]
-                    model.train()
-                    if args.flow_only:
-                        model.tcow.eval()
-                    noisy, tau, target = model.flow.training_path(action) if is_action else (None, None, None)
-                    # DDP averages gradients across ranks. Weight by the actual sample/valid-step
-                    # counts, including short batches, to retain the global action-loss mean.
-                    valid_count = valid.sum().float() * bool(count)
-                    dist.all_reduce(valid_count)
-                    with torch.autocast("cuda", dtype=torch.bfloat16):
-                        logits, velocity, latent, context = engine(rgbd, query, proprio, noisy, tau, wrist=wrist)
-                        action_loss = (((velocity.float() - target).square() * valid[:, :, None]).sum()
-                                       * (world * bool(count)) / (valid_count * action.shape[-1])) if is_action else logits.new_zeros(())
-                    mask_loss = (logits.sum() * 0 if args.flow_only else
-                                 original_mask_loss(losses, logits, truth,
-                                                    (resume_step + step) / max(resume_step + total_steps, 1))
-                                 * (world * count / len(batch)))
-                    total = action_loss + args.mask_loss_weight * mask_loss
-                    if not torch.isfinite(total):
-                        raise ValueError(f"nonfinite loss on rank {rank}")
-                    optimizer.zero_grad(set_to_none=True)
-                    total.backward()
-                    model._latent = None
-                    if is_action not in checked_phases:
-                        patch = model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.grad
-                        head = model.tcow.seeker.tracker_post_linear.weight.grad
-                        out = model.flow.output.weight.grad
-                        if args.flow_only and (patch is not None or head is not None or out is None or
-                                               not torch.isfinite(out).all() or not out.abs().sum()):
-                            raise AssertionError("invalid frozen TCOW / trainable FM gradients")
-                        if not is_action and out is not None:
-                            raise AssertionError("mask-only batch created FM gradients")
-                        values = [float(p.float().abs().sum()) if p is not None else None
-                                  for p in (patch, head, out)]
-                        required = values if is_action else values[:2]
-                        if not args.flow_only and any(v is None or not np.isfinite(v) or v <= 0 for v in required):
-                            raise AssertionError(f"missing or nonfinite gradients on rank {rank}")
-                        wrist_grad = model.flow.wrist_encoder.patch.weight.grad if args.wrist_camera else None
-                        wrist_value = float(wrist_grad.float().abs().sum()) if wrist_grad is not None else None
-                        if args.freeze_wrist_encoder and any(p.grad is not None for p in model.flow.wrist_encoder.parameters()):
-                            raise AssertionError("frozen wrist encoder created gradients")
-                        if args.wrist_camera and not args.freeze_wrist_encoder and is_action and (wrist_value is None or not np.isfinite(wrist_value) or wrist_value <= 0):
-                            raise AssertionError(f"missing or nonfinite wrist gradient on rank {rank}")
-                        if not is_action and wrist_grad is not None:
-                            raise AssertionError("mask-only batch created wrist gradients")
-                        if rank == 0:
-                            print(json.dumps({"event": "gradient_smoke", "action_phase": is_action,
-                                              "latent_shape": list(latent.shape),
-                                              "context_shape": list(context.shape) if context is not None else None,
-                                              "patch_grad": values[0], "mask_head_grad": values[1],
-                                              "flow_grad": values[2], "wrist_grad": wrist_value,
-                                              "frozen_wrist_encoder": args.freeze_wrist_encoder}), flush=True)
-                        checked_phases.add(is_action)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config["train_args"].gradient_clip,
-                                                   error_if_nonfinite=True)
-                    optimizer.step()
-                    scheduler.step()
-                    step += 1
-                    logs = torch.stack((action_loss.detach(), mask_loss.detach()))
-                    dist.all_reduce(logs)
-                    logs /= world
-                    progress.update()
-                    progress.set_postfix(action=f"{logs[0].item():.3f}", mask=f"{logs[1].item():.3f}",
-                                         chunks=len(batch) if is_action else 0, refresh=False)
-                    if rank == 0 and step % 25 == 0:
-                        elapsed = time.perf_counter() - started
-                        print(json.dumps({"event": "training_progress", "step": step, "steps": total_steps,
-                                          "elapsed_s": elapsed, "seconds_per_step": elapsed / step,
-                                          "eta_hours": (total_steps - step) * elapsed / step / 3600,
-                                          "lrs": {g["name"]: g["lr"] for g in optimizer.param_groups},
-                                          "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30}), flush=True)
-                    # Release RGB-D clips and full-video masks before allocating the next batch.
-                    del samples, rgbd, query, truth, proprio, action, valid, wrist
-                    del noisy, tau, target, logits, velocity, latent, context
-                    del action_loss, mask_loss, total
-                    if args.smoke_steps and step >= args.smoke_steps:
-                        # Compare an updated action projection and TCOW patch checksum across ranks.
-                        signature = torch.stack((model.flow.output.weight.detach().double().sum(),
-                                                 model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.detach().double().sum()))
-                        signatures = [torch.zeros_like(signature) for _ in range(world)]
-                        dist.all_gather(signatures, signature)
-                        for other in signatures[1:]:
-                            torch.testing.assert_close(signatures[0], other, rtol=0, atol=0)
-                        memory = torch.tensor([torch.cuda.max_memory_reserved() / 2**30,
-                                               resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20], device="cuda")
-                        memories = [torch.zeros_like(memory) for _ in range(world)]
-                        dist.all_gather(memories, memory)
-                        if rank == 0:
-                            report = {"event": "smoke_complete", "steps": step, "world_size": world,
-                                      "rank_batch_sizes": args.rank_batch_sizes, "synchronized": True,
-                                      "expected_loss_phases_passed": checked_phases == ({True} if args.flow_only else {False, True}),
-                                      "frozen_tcow": args.flow_only,
-                                      "per_rank_peak_vram_cpu_rss_gib": [m.tolist() for m in memories]}
-                            (args.output / "smoke.json").write_text(json.dumps(report, indent=2) + "\n")
-                            print(json.dumps(report), flush=True)
-                        release_cluster(episodes, shared_root / str(cluster_index), rank)
-                        if rank == 0:
-                            shared_root.rmdir()
-                        dist.destroy_process_group()
-                        return
-                release_cluster(episodes, shared_root / str(cluster_index), rank)
-                del episodes
-                if (cluster_index + 1) % len(clusters) == 0:
-                    dist.barrier()
-                    if rank == 0:
-                        save_checkpoint(args.output / "latest.pt", model, resume_step + step, args)
-                        record = {"step": resume_step + step, "resumed_run_step": step,
-                                  "clusters_done": completed_epochs * len(clusters) + cluster_index + 1,
-                                  "epoch": completed_epochs + cluster_index // len(clusters) + 1,
-                                  "action_loss": float(logs[0]), "mask_loss": float(logs[1]),
-                                  "elapsed_s": time.perf_counter() - started, "prefetch_wait_s": wait_s,
-                                  "peak_vram_gib": torch.cuda.max_memory_reserved() / 2**30,
-                                  "peak_cpu_rss_gib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20}
-                        history.append(record)
-                        (args.output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
-                        tqdm.write(json.dumps(record), file=sys.stdout)
-                    dist.barrier()
-    if rank == 0:
-        shared_root.rmdir()
+        release_videos(videos)
         (args.output / "final.pt").hardlink_to(args.output / "latest.pt")
         print(json.dumps({"event": "complete", "steps": resume_step + step, "resumed_run_steps": step,
                           "elapsed_s": time.perf_counter() - started}), flush=True)
