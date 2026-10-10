@@ -7,26 +7,22 @@ import gymnasium as gym
 import mujoco
 import numpy as np
 from gymnasium import spaces
-from PIL import Image
 
 from controllers.nexarm_mujoco_backend import JOINT_NAMES, MUJOCO_JOINTS
+from OATFlow.environment.control import step_joint_waypoint
+from OATFlow.environment.success import cover_deposited, jaw_contacts
+from OATFlow.task import TARGETS
 
 
 SCENE_XML = Path(__file__).with_name("scene.xml")
-TARGETS = ("Butter", "Popcorn", "Milk", "Tuna")
-SLOTS = ((0.45, -0.27), (0.45, -0.21), (0.65, -0.27), (0.65, -0.21))
-TARGET_HALF_HEIGHT = {"Butter": 0.010565, "Popcorn": 0.014870,
-                      "Milk": 0.028553, "Tuna": 0.006494}
+SLOTS = ((0.41, -0.24), (0.49, -0.24), (0.61, -0.24), (0.69, -0.24))
+TARGET_HALF_HEIGHT = {name: .016 for name in TARGETS}
 COVER_XY = {"cover_a": (0.45, -0.24), "cover_b": (0.65, -0.24)}
-PHASES = ("reveal", "occlude", "query", "execute")
 SHOULDER_LIFT_FORCE_LIMIT_NM = 5.0
-RESOLUTION = 480
-REFERENCE_SIZE = 96
 REVEAL_FRAMES = 75
-COVER_FRAMES = 150
-HOLD_FRAMES = 50
-COVER_DROP_ZONE_XY = (0.30, -0.04)
-TARGET_DROP_ZONE_XY = (0.79, -0.04)
+COVER_DROP_ZONE_XY = (0.54, 0.02)
+COVER_DROP_ZONE_HALF_SIZE = (0.30, 0.09)
+COVER_DROP_GOALS_XY = {"cover_a": (0.335, 0.02), "cover_b": (0.745, 0.02)}
 WORKSPACE_LOWER = (0.34, -0.34, -0.02)
 WORKSPACE_UPPER = (0.74, -0.04, 0.45)
 TARGET_WORKSPACE_UPPER = (0.95, 0.08, 0.45)
@@ -60,15 +56,10 @@ def wrist_camera_metadata(model, frames):
 class MemoryOcclusionEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 25}
 
-    def __init__(self, max_episode_steps: int = 1500, context_fps: int = 50,
-                 resolution: int = RESOLUTION) -> None:
+    def __init__(self, max_episode_steps: int = 1500, resolution: int = 320) -> None:
         super().__init__()
-        if context_fps not in (10, 25, 50):
-            raise ValueError("context_fps must be 10, 25, or 50")
         if resolution < 160:
             raise ValueError("resolution must be at least 160")
-        self.context_fps = context_fps
-        self.record_stride = 50 // context_fps
         self.resolution = resolution
         self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
         configure_mvp_model(self.model)
@@ -86,7 +77,6 @@ class MemoryOcclusionEnv(gym.Env):
         self.observation_space = spaces.Dict({
             "overview_rgb": spaces.Box(0, 255, shape=(resolution, resolution, 3), dtype=np.uint8),
             "wrist_rgb": spaces.Box(0, 255, shape=(resolution, resolution, 3), dtype=np.uint8),
-            "reference_rgb": spaces.Box(0, 255, shape=(REFERENCE_SIZE, REFERENCE_SIZE, 3), dtype=np.uint8),
             "robot_joint_positions": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
             "robot_joint_velocities": spaces.Box(-np.inf, np.inf, shape=(6,), dtype=np.float32),
         })
@@ -107,9 +97,6 @@ class MemoryOcclusionEnv(gym.Env):
         self.phase = "reveal"
         self.layout = "standard"
         self.assignment: dict[str, str] = {}
-        self.reveal_rgb: np.ndarray | None = None
-        self.context_rgb: np.ndarray | None = None
-        self.reference_images: dict[str, np.ndarray] = {}
         self.query_target: str | None = None
         self.selected_cover: str | None = None
         self.failure_reason: str | None = None
@@ -138,83 +125,28 @@ class MemoryOcclusionEnv(gym.Env):
         for slot, (name, (x, y)) in enumerate(zip(self.np_random.permutation(TARGETS), SLOTS)):
             name = str(name)
             self.assignment[name] = "cover_a" if x < 0.55 else "cover_b"
-            if self.layout == "standard":
-                x += self.np_random.uniform(-0.012, 0.012)
-            else:
-                x += (0.015 if slot % 2 == 0 else -0.015) + self.np_random.uniform(-0.005, 0.005)
-            y += self.np_random.uniform(-0.004, 0.004)
-            if name in ("Butter", "Popcorn"):
-                yaw = self.np_random.choice((0.0, np.pi)) + self.np_random.uniform(-0.45, 0.45)
-            else:
-                yaw = self.np_random.uniform(-np.pi, np.pi)
+            x += self.np_random.uniform(-.002, .002)
+            y += self.np_random.uniform(-.014, .014)
+            if self.layout == "new_layout":
+                y += .010 if slot % 2 == 0 else -.010
+            yaw = self.np_random.uniform(-np.pi, np.pi)
             qadr = self.target_qadr[name]
             self.data.qpos[qadr:qadr + 3] = (x, y, TARGET_HALF_HEIGHT[name] + 0.002)
             self.data.qpos[qadr + 3:qadr + 7] = (np.cos(yaw / 2), 0, 0, np.sin(yaw / 2))
-            if (options or {}).get("upright_targets") and name != "Milk":
-                rest = np.array((np.sqrt(.5), np.sqrt(.5), 0, 0) if name == "Tuna"
-                                else (np.sqrt(.5), 0, np.sqrt(.5), 0))
-                quaternion = np.empty(4)
-                mujoco.mju_mulQuat(quaternion, self.data.qpos[qadr + 3:qadr + 7], rest)
-                self.data.qpos[qadr + 3:qadr + 7] = quaternion
-                self.data.qpos[qadr + 2] = {"Butter": .020660, "Popcorn": .022136,
-                                          "Tuna": .014144}[name] + .002
-        self._place_covers(visible=False)
-        rgb_frames = []
-        for frame in range(REVEAL_FRAMES):
-            mujoco.mj_step(self.model, self.data, 10)
-            if (frame + 1) % self.record_stride == 0:
-                rgb_frames.append(self._overview())
-        self.reveal_rgb = np.stack(rgb_frames)
-        self.context_rgb = self.reveal_rgb
-        self.reference_images = self._make_references(self.reveal_rgb[-1])
+        self._park_covers()
+        mujoco.mj_step(self.model, self.data, REVEAL_FRAMES * 10)
         self.initial_positions = self.target_positions()
         return self.observe(), self._info()
 
-    def _place_covers(self, *, visible: bool) -> None:
+    def _park_covers(self) -> None:
         for name, qadr in self.cover_qadr.items():
-            if visible:
-                x, y = COVER_XY[name]
-                z = 0.002
-            else:
-                x = -2.0 if name == "cover_a" else 2.0
-                y, z = 0.0, 0.15
+            x = -2.0 if name == "cover_a" else 2.0
+            y, z = 0.0, 0.15
             self.data.qpos[qadr:qadr + 3] = (x, y, z)
             self.data.qpos[qadr + 3:qadr + 7] = (1, 0, 0, 0)
             dadr = self.model.jnt_dofadr[self.model.joint(f"{name}_joint").id]
             self.data.qvel[dadr:dadr + 6] = 0.0
         mujoco.mj_forward(self.model, self.data)
-
-    def occlude(self) -> dict[str, np.ndarray]:
-        if self.phase != "reveal":
-            raise RuntimeError("occlude requires reveal phase")
-        starts = {"cover_a": (-0.15, -0.24), "cover_b": (1.25, -0.24)}
-        rgb_frames = []
-        for frame in range(COVER_FRAMES):
-            progress = (frame + 1) / COVER_FRAMES
-            travel = min(progress / 0.6, 1.0)
-            lower = max((progress - 0.6) / 0.4, 0.0)
-            travel = travel * travel * (3 - 2 * travel)
-            lower = lower * lower * (3 - 2 * lower)
-            for name, qadr in self.cover_qadr.items():
-                start_x, start_y = starts[name]
-                end_x, end_y = COVER_XY[name]
-                self.data.qpos[qadr:qadr + 3] = (
-                    start_x + travel * (end_x - start_x),
-                    start_y + travel * (end_y - start_y),
-                    0.22 + lower * (0.002 - 0.22),
-                )
-            mujoco.mj_forward(self.model, self.data)
-            if (frame + 1) % self.record_stride == 0:
-                rgb_frames.append(self._overview())
-        hold_frames = HOLD_FRAMES // self.record_stride
-        self.context_rgb = np.concatenate((
-            self.reveal_rgb, np.stack(rgb_frames),
-            np.repeat(rgb_frames[-1][None], hold_frames, axis=0),
-        ))
-        reveal_frames = REVEAL_FRAMES // self.record_stride
-        self.reveal_rgb = self.context_rgb[:reveal_frames]
-        self.phase = "occlude"
-        return self.observe()
 
     def query(self, target: str | None = None) -> dict[str, np.ndarray]:
         if self.phase not in ("occlude", "query"):
@@ -245,28 +177,6 @@ class MemoryOcclusionEnv(gym.Env):
         self.segmentation_renderer.update_scene(self.data, camera="overview")
         return self.segmentation_renderer.render().copy()
 
-    def _make_references(self, rgb: np.ndarray) -> dict[str, np.ndarray]:
-        segmentation = self.segmentation()
-        references = {}
-        for name in TARGETS:
-            mask = segmentation[:, :, 0] == self.model.geom(f"{name}_visual").id
-            ys, xs = np.where(mask)
-            if len(xs) == 0:
-                raise RuntimeError(f"target {name} is not visible in reveal frame")
-            x0, x1 = xs.min(), xs.max() + 1
-            y0, y1 = ys.min(), ys.max() + 1
-            crop, crop_mask = rgb[y0:y1, x0:x1], mask[y0:y1, x0:x1]
-            side = max(x1 - x0, y1 - y0) + 8
-            canvas = np.full((side, side, 3), 128, dtype=np.uint8)
-            top = (side - (y1 - y0)) // 2
-            left = (side - (x1 - x0)) // 2
-            patch = canvas[top:top + y1 - y0, left:left + x1 - x0]
-            patch[crop_mask] = crop[crop_mask]
-            references[name] = np.asarray(
-                Image.fromarray(canvas).resize((REFERENCE_SIZE, REFERENCE_SIZE), Image.Resampling.NEAREST)
-            )
-        return references
-
     def wrist_image(self) -> np.ndarray:
         self.renderer.update_scene(self.data, camera="wrist")
         return self.renderer.render().copy()
@@ -274,10 +184,8 @@ class MemoryOcclusionEnv(gym.Env):
     def observe(self) -> dict[str, np.ndarray]:
         rgb = self._overview()
         wrist = self.wrist_image()
-        reference = (np.zeros((REFERENCE_SIZE, REFERENCE_SIZE, 3), dtype=np.uint8)
-                     if self.query_target is None else self.reference_images[self.query_target])
         observation = {"overview_rgb": rgb,
-                "wrist_rgb": wrist, "reference_rgb": reference.copy(),
+                "wrist_rgb": wrist,
                 "robot_joint_positions": self.data.qpos[self.robot_qpos_addresses].astype(np.float32).copy(),
                 "robot_joint_velocities": self.data.qvel[self.robot_qvel_addresses].astype(np.float32).copy()}
         return observation
@@ -293,8 +201,7 @@ class MemoryOcclusionEnv(gym.Env):
         action = np.asarray(action, dtype=np.float32)
         if not self.action_space.contains(action):
             raise ValueError("action must be six actuator positions within control limits")
-        self.data.ctrl[:] = action
-        mujoco.mj_step(self.model, self.data, round(.04 / self.model.opt.timestep))
+        step_joint_waypoint(self.model, self.data, action)
         self.elapsed_steps += 1
         self._evaluate()
         terminated = self.success or self.failure_reason is not None
@@ -306,24 +213,10 @@ class MemoryOcclusionEnv(gym.Env):
     def _cover_in_drop_zone(self) -> bool:
         if self.selected_cover is None:
             return False
-        pos = self.data.xpos[self.model.body(self.selected_cover).id]
-        return bool(np.all(np.abs(pos[:2] - COVER_DROP_ZONE_XY) < (0.10, 0.10))
-                    and -0.01 < pos[2] < 0.18)
-
-    def _target_in_drop_zone(self) -> bool:
-        if self.query_target is None:
-            return False
-        pos = self.target_positions()[self.query_target]
-        return bool(np.all(np.abs(pos[:2] - TARGET_DROP_ZONE_XY) < (0.055, 0.055))
-                    and -0.01 < pos[2] < 0.08 and not self._target_gripped())
+        return cover_deposited(self.model, self.data, self.selected_cover)
 
     def _target_gripped(self) -> bool:
-        collision = self.model.geom(f"{self.query_target}_collision").id
-        jaws = {self.model.geom("link_6_left_jaw_collision_0").id,
-                self.model.geom("link_6_right_jaw_collision_0").id}
-        return any({contact.geom1, contact.geom2} & jaws
-                   and collision in (contact.geom1, contact.geom2)
-                   for contact in self.data.contact)
+        return len(jaw_contacts(self.model, self.data, self.query_target)) == 2
 
     def _wrong_object_gripped(self) -> bool:
         if self.data.ctrl[5] > -0.02:
@@ -363,14 +256,14 @@ class MemoryOcclusionEnv(gym.Env):
             self.grasp_hold_steps = 0
         if self.grasp_hold_steps >= 10:
             self.target_grasped = True
-        self.success = self.target_grasped and self._target_in_drop_zone()
+        self.success = self.target_grasped and self._cover_in_drop_zone()
 
     def _info(self) -> dict:
         return {"phase": self.phase, "elapsed_steps": self.elapsed_steps,
                 "selected_cover": self.selected_cover,
                 "cover_removed": self._cover_in_drop_zone(),
                 "target_grasped": self.target_grasped,
-                "target_placed": self._target_in_drop_zone() if self.query_target else False,
+                "target_lifted": self.target_grasped,
                 "success": self.success, "failure_reason": self.failure_reason}
 
     def render(self) -> np.ndarray:

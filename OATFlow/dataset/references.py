@@ -1,4 +1,4 @@
-"""Render one fixed, close-up reference image for each HOPE target."""
+"""Render one fixed, close-up reference image for each colored target."""
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,20 +1,6 @@
 <mujoco model="NexArm memory occlusion MVP">
   <include file="../../assets/robot/robot.xml"/>
   <compiler meshdir="../../assets/robot/meshes"/>
-  <asset>
-    <texture name="butter_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Butter.png"/>
-    <texture name="popcorn_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Popcorn.png"/>
-    <texture name="milk_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Milk.png"/>
-    <texture name="tuna_tex" type="2d" file="../../assets/hope-dataset/meshes/eval/Tuna.png"/>
-    <material name="butter_mat" texture="butter_tex"/>
-    <material name="popcorn_mat" texture="popcorn_tex"/>
-    <material name="milk_mat" texture="milk_tex"/>
-    <material name="tuna_mat" texture="tuna_tex"/>
-    <mesh name="butter_mesh" file="../../hope-dataset/meshes/eval/Butter.obj" scale="0.004 0.004 0.004"/>
-    <mesh name="popcorn_mesh" file="../../hope-dataset/meshes/eval/Popcorn.obj" scale="0.0035 0.0035 0.0035"/>
-    <mesh name="milk_mesh" file="../../hope-dataset/meshes/eval/Milk.obj" scale="0.003 0.003 0.003"/>
-    <mesh name="tuna_mesh" file="../../hope-dataset/meshes/eval/Tuna.obj" scale="0.004 0.004 0.004"/>
-  </asset>
   <visual>
     <headlight ambient="0.3 0.3 0.3" diffuse="0.4 0.4 0.4" specular="0.15 0.15 0.15"/>
   </visual>
@@ -32,41 +18,43 @@
     <geom type="box" pos="0.02 0.84 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
     <geom type="box" pos="0.38 0.50 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
     <geom type="box" pos="0.38 0.84 -0.55" size="0.018 0.018 0.18" rgba="0.15 0.18 0.21 1"/>
-    <geom name="cover_drop_zone" type="box" pos="0.30 -0.04 0.0005" size="0.11 0.11 0.0005"
+    <geom name="cover_drop_zone" type="box" pos="0.54 0.02 0.0005" size="0.30 0.09 0.0005"
           rgba="0.12 0.34 0.22 1" contype="0" conaffinity="0"/>
-    <geom name="target_drop_zone" type="box" pos="0.79 -0.04 0.0005" size="0.07 0.07 0.0005"
-          rgba="0.12 0.27 0.68 1" contype="0" conaffinity="0"/>
     <camera name="overview" pos="0.54 -0.78 0.55" xyaxes="1 0 0 0 0.51865 0.85499" fovy="50"/>
     <light pos="0.2 -0.5 1.4" dir="0.2 0.3 -1" diffuse="0.8 0.8 0.8"/>
     <light pos="0.9 0.2 1.1" dir="-0.2 -0.2 -1" diffuse="0.35 0.35 0.35"/>
 
-    <body name="Butter" pos="0.45 -0.27 0.010565">
-      <freejoint name="Butter_joint"/>
-      <geom name="Butter_visual" type="mesh" mesh="butter_mesh" material="butter_mat"
-            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
-      <geom name="Butter_collision" type="box" size="0.020660 0.004787 0.010565"
-            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    <body name="RedCube" pos="0.41 -0.24 0.016">
+      <freejoint name="RedCube_joint"/>
+      <inertial pos="0 0 0" mass="0.030" diaginertia="0.00000512 0.00000512 0.00000512"/>
+      <geom name="RedCube_visual" type="box" size="0.016 0.016 0.016"
+            mass="0" contype="0" conaffinity="0" rgba="0.85 0.12 0.10 1"/>
+      <geom name="RedCube_collision" type="box" size="0.016 0.016 0.016"
+            mass="0" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
     </body>
-    <body name="Popcorn" pos="0.45 -0.21 0.014870">
-      <freejoint name="Popcorn_joint"/>
-      <geom name="Popcorn_visual" type="mesh" mesh="popcorn_mesh" material="popcorn_mat"
-            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
-      <geom name="Popcorn_collision" type="box" size="0.022136 0.006693 0.014870"
-            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    <body name="BlueCube" pos="0.49 -0.24 0.016">
+      <freejoint name="BlueCube_joint"/>
+      <inertial pos="0 0 0" mass="0.030" diaginertia="0.00000512 0.00000512 0.00000512"/>
+      <geom name="BlueCube_visual" type="box" size="0.016 0.016 0.016"
+            mass="0" contype="0" conaffinity="0" rgba="0.12 0.30 0.85 1"/>
+      <geom name="BlueCube_collision" type="box" size="0.016 0.016 0.016"
+            mass="0" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
     </body>
-    <body name="Milk" pos="0.65 -0.27 0.028553">
-      <freejoint name="Milk_joint"/>
-      <geom name="Milk_visual" type="mesh" mesh="milk_mesh" material="milk_mat"
-            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
-      <geom name="Milk_collision" type="box" size="0.010823 0.010984 0.028553"
-            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    <body name="GreenCube" pos="0.61 -0.24 0.016">
+      <freejoint name="GreenCube_joint"/>
+      <inertial pos="0 0 0" mass="0.030" diaginertia="0.00000512 0.00000512 0.00000512"/>
+      <geom name="GreenCube_visual" type="box" size="0.016 0.016 0.016"
+            mass="0" contype="0" conaffinity="0" rgba="0.12 0.72 0.24 1"/>
+      <geom name="GreenCube_collision" type="box" size="0.016 0.016 0.016"
+            mass="0" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
     </body>
-    <body name="Tuna" pos="0.65 -0.21 0.006494">
-      <freejoint name="Tuna_joint"/>
-      <geom name="Tuna_visual" type="mesh" mesh="tuna_mesh" material="tuna_mat"
-            quat="0.70710678 0.70710678 0 0" mass="0" contype="0" conaffinity="0"/>
-      <geom name="Tuna_collision" type="box" size="0.013163 0.014144 0.006494"
-            mass="0.025" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
+    <body name="YellowCube" pos="0.69 -0.24 0.016">
+      <freejoint name="YellowCube_joint"/>
+      <inertial pos="0 0 0" mass="0.030" diaginertia="0.00000512 0.00000512 0.00000512"/>
+      <geom name="YellowCube_visual" type="box" size="0.016 0.016 0.016"
+            mass="0" contype="0" conaffinity="0" rgba="0.95 0.75 0.08 1"/>
+      <geom name="YellowCube_collision" type="box" size="0.016 0.016 0.016"
+            mass="0" rgba="0 0 0 0" friction="1.2 0.01 0.001"/>
     </body>
 
     <body name="cover_a" pos="-2 0 0.003">

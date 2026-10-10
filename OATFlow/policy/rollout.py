@@ -13,8 +13,8 @@ import torch
 from PIL import Image, ImageDraw
 from tqdm.auto import tqdm
 
-from OATFlow.dataset.episode import context
-from OATFlow.dataset.ee_actions import EEKinematics, physical_joint_action
+from OATFlow.dataset.episode import context, setup_context_scene
+from OATFlow.task import physical_joint_action
 from OATFlow.environment.env import MemoryOcclusionEnv
 from OATFlow.policy.visualization import mask_panel
 from OATFlow.policy.model import preprocess_wrist_image, restore_policy
@@ -22,23 +22,12 @@ from OATFlow.policy.tracking import Seeker
 from OATFlow.task import normalized
 
 
-def physical_action(action, limits):
-    fraction = np.r_[(action[:5] + 1) / 2, action[5]]
-    return (limits[:, 0] + fraction * np.diff(limits, axis=1)[:, 0]).astype(np.float32)
-
-
 @torch.inference_mode()
-def infer(model, rgbs, depths, query_visible, proprio=None, noise=None, wrist_rgb=None):
+def infer(model, rgbs, query_visible, proprio=None, noise=None, wrist_rgb=None):
     device = next(model.parameters()).device
     index = np.rint(np.linspace(0, len(rgbs) - 1, 30)).astype(int)
     rgb = torch.from_numpy(np.stack([rgbs[i] for i in index])).permute(3, 0, 1, 2).to(device)
     rgb = (rgb.float() / 255 - .45) / .225
-    if model.tcow.seeker.input_channels == 5:
-        if depths is None or len(depths) != len(rgbs):
-            raise ValueError("historical RGB-D checkpoint requires aligned depth history")
-        depth = torch.from_numpy(np.stack([depths[i] for i in index])).to(device)
-        depth = ((depth.clamp(.4, 1.6) - 1.0) / .6)[None]
-        rgb = torch.cat((rgb, depth), dim=0)
     rgbd = rgb[None]
     query = torch.zeros((1, 1, 30, 240, 320), device=device)
     query[0, 0, 0] = torch.from_numpy(query_visible).to(device)
@@ -90,14 +79,26 @@ def run_rollout(model, args, checkpoint_step):
         raise FileExistsError(args.output)
     args.output.mkdir(parents=True)
     meta = json.loads((args.reference_episode / "episode.json").read_text())
-    if meta["fps"] != 25 or meta["resolution"] != [240, 320]:
+    if meta["fps"] != 25 or meta.get("tcow_resolution") != [240, 320]:
         raise ValueError("expected 25 Hz 240x320 reference scene")
+    training = json.loads((args.checkpoint.parent / "config.json").read_text())
+    test_config = {**{k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+                   "checkpoint_step": checkpoint_step, "training": training,
+                   "noise_seed": 0, "flow_steps": 10, "horizon": 25, "fps": 25}
+    (args.output / "config.json").write_text(json.dumps(test_config, indent=2) + "\n")
+    (args.output / "README.md").write_text(
+        f"# {args.output.name}\n\nClosed-loop learned TCOW/FM rollout; checkpoint {args.checkpoint}, step {checkpoint_step}.\n"
+        f"Scene {args.reference_episode}; seed {meta['seed']}; target {meta['target_object_id']}.\n"
+        f"Training configuration: config.json. H25/K{args.execute_chunk}, Euler10, noise0, 25Hz, total frame budget {args.max_total_frames}.\n"
+        "Absolute joint actions, live RGB and proprio; only the initial query mask is supplied. Status: running.\n")
     context_frames = int(meta["decision_frames"]["t_occ"])
     action_budget = args.max_total_frames - context_frames
     if action_budget < 1:
         raise ValueError(f"max-total-frames must exceed {context_frames} context frames")
-    env = MemoryOcclusionEnv(context_fps=25, resolution=320, max_episode_steps=action_budget)
-    env.reset(seed=meta["seed"], options={"upright_targets": True, "layout": meta["layout"]})
+    env = MemoryOcclusionEnv(resolution=320, max_episode_steps=action_budget)
+    _, live_plan = setup_context_scene(env, meta["task_id"], meta["seed"], meta["swaps"])
+    if live_plan != meta["context_plan"]:
+        raise ValueError("reference context differs from the prior scene setup")
     env.data.time = 0.0
     target = meta["target_object_id"]
     target_geom = env.model.geom(target + "_visual").id
@@ -123,7 +124,6 @@ def run_rollout(model, args, checkpoint_step):
                    for name in env.cover_qadr}
     initial_target_z = float(env.target_positions()[target][2])
     limits = env.model.actuator_ctrlrange.copy()
-    ee = EEKinematics(env.model) if getattr(model.flow, "action_representation", None) == "relative_ee" else None
     fixed_noise = model.flow.sample_noise(1, "cpu", torch.Generator().manual_seed(0)).to(
         next(model.parameters()).device)
     writer = iio.imopen(args.output / "rollout_masks_25hz.mp4", "w", plugin="pyav")
@@ -159,11 +159,8 @@ def run_rollout(model, args, checkpoint_step):
             while len(trace) < action_budget:
                 source_frame = len(rgbs) - 1
                 joints = normalized(env.data.qpos[env.robot_qpos_addresses], limits)
-                chunk, masks = infer(model, rgbs, None, query_visible, joints, fixed_noise,
+                chunk, masks = infer(model, rgbs, query_visible, joints, fixed_noise,
                                      wrist_rgb=observation["wrist_rgb"] if use_wrist else None)
-                if ee is not None:
-                    ee_anchor = ee.pose(physical_joint_action(joints, limits)[:5])
-                    ee_initial = env.data.qpos[env.robot_qpos_addresses[:5]].copy()
                 policy_chunks.append({"source_frame": source_frame,
                                       "proprio": joints.tolist(),
                                       "action_25_raw": chunk.tolist()})
@@ -173,16 +170,9 @@ def run_rollout(model, args, checkpoint_step):
                     frame_index = len(rgbs) - 1
                     joints = normalized(env.data.qpos[env.robot_qpos_addresses], limits)
                     action = chunk[offset].copy()
-                    if ee is None:
-                        action[:5] = np.clip(action[:5], -1, 1)
-                        action[5] = float(action[5] >= .5)
-                        command = physical_action(action, limits)
-                        ik_error = None
-                    else:
-                        action[6] = float(action[6] >= .5)
-                        # Generated 6D poses are projected onto this five-joint arm's reachable poses.
-                        command, ik_error = ee.decode(action, ee_anchor, ee_initial, strict=False)
-                        ee_initial = command[:5].astype(np.float64)
+                    action[:5] = np.clip(action[:5], -1, 1)
+                    action[5] = np.clip(action[5], 0, 1)
+                    command = physical_joint_action(action, limits).astype(np.float32)
                     writer.write(panel(rgbs[-1], masks, frame_index, source_frame,
                                        observation["wrist_rgb"] if use_wrist else None),
                                  is_batch=False)
@@ -196,7 +186,7 @@ def run_rollout(model, args, checkpoint_step):
                             env.selected_cover = selected
                     trace.append({"frame": frame_index, "source_frame": source_frame,
                                   "chunk_offset": offset, "action": action.tolist(),
-                                  "physical_command": command.tolist(), "ee_ik_error": ik_error,
+                                  "physical_command": command.tolist(),
                                   "proprio": joints.tolist(), "selected_cover": env.selected_cover,
                                   "cover_displacement_m": movement,
                                   "target_lift_m": max_lift, "success": bool(env.success),
@@ -240,6 +230,8 @@ def run_rollout(model, args, checkpoint_step):
               "video": str(args.output / "rollout_masks_25hz.mp4"),
               "note": "Only the first-frame visible GT query mask is supplied to TCOW; all later camera frames, proprio and wrist RGB (when enabled) are live sim observations."}
     (args.output / "summary.json").write_text(json.dumps(result, indent=2) + "\n")
+    readme = args.output / "README.md"
+    readme.write_text(readme.read_text().replace("Status: running", "Status: complete") + f"\nResult: {json.dumps(result)}\n")
     print(json.dumps({"event": "complete", **result}), flush=True)
     return result
 

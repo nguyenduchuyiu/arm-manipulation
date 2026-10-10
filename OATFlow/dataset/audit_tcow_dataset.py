@@ -8,10 +8,15 @@ from multiprocessing import get_context
 import sys
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import mujoco
+import numpy as np
 from tqdm.auto import tqdm
 
 from OATFlow.dataset.validate import validate
-from OATFlow.environment.env import TARGETS
+from OATFlow.environment.env import SCENE_XML
+from OATFlow.task import TASKS, task_id_from_state
 
 
 def audit(root: Path, pilot_scenes=0, workers=1):
@@ -22,45 +27,63 @@ def audit(root: Path, pilot_scenes=0, workers=1):
         raise ValueError("empty plan or scene seed appears in multiple splits")
     rows = []
     contexts = {}
+    model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
+    env = SimpleNamespace(model=model, data=mujoco.MjData(model),
+                          cover_qadr={name: model.joint(f"{name}_joint").qposadr[0]
+                                      for name in ("cover_a", "cover_b")})
     for scene in tqdm(plan, desc="audit scenes", unit="scene", mininterval=5):
         group, seed, split = scene["group"], scene["seed"], scene["split"]
-        for target in TARGETS:
-            path = root / group / f"episode_{seed:06d}_{target}"
-            if not (path / "episode.json").is_file():
-                raise FileNotFoundError(path / "episode.json")
-            meta = json.loads((path / "episode.json").read_text())
-            if (meta["seed"], meta["target_object_id"], meta["layout"], meta["split"],
-                    meta["swaps"], meta["object_to_occluder"]) != (
-                    seed, target, scene["layout"], split, scene["swaps"], scene["assignment"]):
-                raise ValueError(f"episode metadata differs from frozen plan: {path}")
-            if "context_plan" not in meta:
-                raise ValueError(f"missing randomized context plan: {path}")
-            if seed in contexts and contexts[seed] != meta["context_plan"]:
-                raise ValueError(f"target queries use different contexts: {path}")
-            contexts[seed] = meta["context_plan"]
-            rows.append({"path": str(path.relative_to(root)), "seed": seed,
-                         "target": target, "layout": scene["layout"], "group": group,
-                         "split": split, "swaps": meta["swaps"],
-                         "cover": meta["correct_cover_body"],
-                         "composition_case": scene["composition_case"],
-                         "is_held_out_query": group == "composition" and target == scene["composition_case"],
-                         "frames": meta["frames"], "fps": meta["fps"],
-                         "resolution": meta["resolution"],
-                         "camera_fovy": meta["overview_camera"]["fovy"],
-                         "cover_released_frame": meta["semantic_transition_frames"]["cover_released"]})
+        target = scene["target"]
+        path = root / group / f"episode_{seed:06d}_{target}"
+        if not (path / "episode.json").is_file():
+            raise FileNotFoundError(path / "episode.json")
+        meta = json.loads((path / "episode.json").read_text())
+        if (meta["seed"], meta["target_object_id"], meta["layout"], meta["split"],
+                meta["swaps"], meta["object_to_occluder"]) != (
+                seed, target, scene["layout"], split, scene["swaps"], scene["assignment"]):
+            raise ValueError(f"episode metadata differs from frozen plan: {path}")
+        if "context_plan" not in meta:
+            raise ValueError(f"missing randomized context plan: {path}")
+        if (meta["task_id"], meta["demo_id"]) != (scene["task_id"], scene["demo_id"]):
+            raise ValueError(f"prior task/query differs from plan: {path}")
+        if meta["setup_task_id"] != (meta["task_id"] ^ (meta["swaps"] % 2)):
+            raise ValueError(f"shuffle changed task identities: {path}")
+        with np.load(path / "sim_state.npz") as state:
+            env.data.qpos[:] = state["initial_qpos"]
+        env.assignment = meta["object_to_occluder"]
+        mujoco.mj_forward(model, env.data)
+        if task_id_from_state(env, TASKS[meta["task_id"]]["objects"]) != meta["task_id"]:
+            raise ValueError(f"physical post-shuffle task differs from metadata: {path}")
+        contexts[seed] = meta["context_plan"]
+        rows.append({"path": str(path.relative_to(root)), "seed": seed,
+                     "target": target, "layout": scene["layout"], "group": group,
+                     "split": split, "swaps": meta["swaps"],
+                     "cover": meta["correct_cover_body"],
+                     "composition_case": scene["composition_case"],
+                     "is_held_out_query": group == "composition" and target == scene["composition_case"],
+                     "frames": meta["frames"], "fps": meta["fps"],
+                     "task_id": meta["task_id"], "target_id": meta["target_id"], "demo_id": meta["demo_id"],
+                     "resolution": meta["resolution"],
+                     "camera_fovy": meta["overview_camera"]["fovy"],
+                     "cover_released_frame": meta["semantic_transition_frames"]["cover_released"]})
     with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
         for _ in tqdm(pool.map(validate, [root / row["path"] for row in rows]),
                       total=len(rows), desc="audit episodes", unit="episode", mininterval=5, file=sys.stdout):
             pass
-    if any(row["resolution"] != [240, 320] or row["camera_fovy"] != 50
+    if any(row["resolution"] != [320, 320] or row["camera_fovy"] != 50
            for row in rows):
         raise ValueError("dataset mixes camera settings or resolutions")
     summary = {"episodes": len(rows), "scene_seeds": len(plan),
+               "queries_per_seed": 1,
                "by_group_split": dict(Counter(f"{row['group']}/{row['split']}"
                                               for row in rows)),
                "by_target": dict(Counter(row["target"] for row in rows)),
                "by_swaps": dict(Counter(str(row["swaps"]) for row in rows)),
                "by_cover": dict(Counter(row["cover"] for row in rows))}
+    summary["by_task_split"] = {
+        f"{group}/{split}": dict(Counter(str(row["task_id"]) for row in rows
+                                         if row["group"] == group and row["split"] == split))
+        for group, split in {(row["group"], row["split"]) for row in rows}}
     summary["held_out_queries"] = sum(row["is_held_out_query"] for row in rows)
     paths = [swap for context in contexts.values() for swap in context["swaps"]]
     summary["trajectory_diversity"] = {

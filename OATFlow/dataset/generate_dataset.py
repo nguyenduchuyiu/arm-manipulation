@@ -1,4 +1,4 @@
-"""Collect 25 Hz multiview episodes, audit, finalize actions, optionally add perturbed demos."""
+"""Collect context + expert or expert-only multiview absolute-joint demonstrations."""
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
@@ -11,40 +11,42 @@ from tqdm.auto import tqdm
 
 from OATFlow.environment.env import TARGETS
 from OATFlow.dataset.actions import finalize_actions
-from OATFlow.dataset.augment_dataset import augment_rows
+from OATFlow.dataset.collect_expert import collect
 from OATFlow.dataset.audit_tcow_dataset import audit
 from OATFlow.dataset.episode import generate
 from OATFlow.dataset.references import create_references
 from OATFlow.dataset.validate import validate
-from OATFlow.policy.data import expand_demonstrations
+from OATFlow.task import TASKS
 
 
 def _generate_one(job):
-    output, seed, target, swaps, layout, tcow_labels = job
-    return generate(output, seed, target, swaps, previews=False, layout=layout,
-                    tcow_labels=tcow_labels)
+    output, scene = job
+    return generate(output, scene["seed"], scene["target"], scene["swaps"],
+                    previews=False, layout=scene["layout"], include_context=True,
+                    task_id=scene["task_id"], demo_id=scene["demo_id"])
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--plan", type=Path, help="frozen scene/split plan; collect all queries then audit")
-    parser.add_argument("--action-mode", choices=("absolute", "delta", "ee"), default="absolute")
+    parser.add_argument("--plan", type=Path, help="independent prior-style demo/split plan")
+    parser.add_argument("--mode", choices=("context", "expert"), default="context")
+    parser.add_argument("--demos-per-task", type=int, default=50)
     parser.add_argument("--episodes", type=int, default=4)
     parser.add_argument("--start-seed", type=int, default=0)
     parser.add_argument("--seed-file", type=Path)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--layout", choices=("standard", "new_layout"), default="standard")
-    parser.add_argument("--tcow-labels", action="store_true")
-    parser.add_argument("--extra-demos", type=int, choices=(0, 2, 3), default=0,
-                        help="attach 2–3 successful perturbed demos per train sample (delta or ee mode)")
     args = parser.parse_args()
     if not 1 <= args.workers <= 8 or args.episodes < 1:
         raise ValueError("use 1–8 workers and positive episodes")
-    if args.extra_demos:
-        if args.action_mode not in ("delta", "ee") or args.layout != "standard":
-            raise ValueError("extra demos require delta/ee actions and standard layout")
-        args.tcow_labels = True
+    if args.mode == "expert":
+        if args.plan or args.seed_file or args.layout != "standard":
+            raise ValueError("expert mode uses balanced covered scenes; no context plan/layout")
+        collect(args.output, args.demos_per_task, args.workers, args.start_seed)
+        return
+    if args.layout != "standard":
+        raise ValueError("prior-style context uses standard layout")
     if args.output.exists():
         raise FileExistsError(f"use a fresh dataset directory: {args.output}")
     if args.plan:
@@ -54,25 +56,29 @@ def main():
         plan = [json.loads(line) for line in plan_text.splitlines()]
         if not plan or len({scene["seed"] for scene in plan}) != len(plan):
             raise ValueError("empty plan or repeated scene seed")
-        args.tcow_labels = True
     else:
         seeds = ([int(line) for line in args.seed_file.read_text().splitlines()]
-                 if args.seed_file else list(range(args.start_seed, args.start_seed + (args.episodes + 3) // 4)))
+                 if args.seed_file else list(range(args.start_seed, args.start_seed + args.episodes)))
         if len(seeds) != len(set(seeds)):
             raise ValueError("duplicate scene seed")
-        plan = [dict(seed=seed, group="", layout=args.layout,
-                     swaps=int(np.random.default_rng(seed + 10000).integers(1, 4))) for seed in seeds]
+        plan = [dict(seed=seed, group="", layout=args.layout, task_id=index % 12,
+                     demo_id=index // 12, target=TASKS[index % 12]["objects"][(index // 12) % 2],
+                     swaps=int(np.random.default_rng(seed + 10000).integers(1, 4)))
+                for index, seed in enumerate(seeds)]
     args.output.mkdir(parents=True)
     config = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    (args.output / "collection.json").write_text(json.dumps({**config, "visual_input": "rgb"}, indent=2) + "\n")
+    config.update(scene_seeds=len(plan), episodes=len(plan), queries_per_seed=1,
+                  setup="shared prior setup_scene")
+    (args.output / "collection.json").write_text(json.dumps({**config, "visual_input": "rgb", "objective": "cover_drop_then_target_lift", "action_representation": "absolute_joint"}, indent=2) + "\n")
     description = (f"# {args.output.name}\n\nGenerate synchronized 25 Hz physical expert episodes.\n"
-                   f"Action mode: {args.action_mode}; wrist RGB + overview RGB (no depth); TCOW labels: {args.tcow_labels}.\n"
-                   f"Workers: {args.workers}; requested extra train demos: {args.extra_demos}.\n"
+                   "Mode: context + expert; absolute joint, full 320px RGB views and cropped 240x320 TCOW labels.\n"
+                   f"Independent scenes: {len(plan)}; one target per seed. Shared prior setup_scene randomizes arm±0.06rad, cover XY±25mm, object placement/yaw and grasp offsets.\n"
+                   "Shuffle alternates sides each round, preserves object/cover identities and in-box position, and hands the same state to the prior expert.\n"
+                   f"Workers: {args.workers}.\n"
                    "Training/weights/epochs/batch/LR/inference: not run.\n"
-                   "Test: episode alignment, scene/split audit, fixed-anchor joint/EE H25 at stride10.\n"
-                   "Extra demos use continuous actuator perturbation, executed-action labels, independent histories.\n"
-                   "Failed rollouts excluded; validation/test receive no extra demos; normalize all valid train demos.\n"
-                   "Config: collection.json; dataset.json; augmentation/config.json when enabled. Status: collecting.\n")
+                   "Test: episode alignment, scene/split audit, absolute joint H25 at stride1.\n"
+                   "Context actions excluded from FM; normalization uses valid standard/train expert frames only.\n"
+                   "Config: collection.json; dataset.json. Status: collecting.\n")
     (args.output / "README.md").write_text(description)
     if args.plan:
         (args.output / "plan.jsonl").write_text(plan_text)
@@ -80,12 +86,9 @@ def main():
     for scene in plan:
         output = args.output / scene["group"]
         create_references(output)
-        jobs.extend((output, scene["seed"], target, scene["swaps"], scene["layout"], args.tcow_labels)
-                    for target in TARGETS)
-    if not args.plan and not args.seed_file:
-        jobs = jobs[:args.episodes]
+        jobs.append((output, scene))
     print(json.dumps({"event": "collection_start", "episodes": len(jobs), "workers": args.workers,
-                      "action_mode": args.action_mode, "output": str(args.output)}), flush=True)
+                      "action_representation": "absolute_joint", "output": str(args.output)}), flush=True)
     rows = []
     with ProcessPoolExecutor(max_workers=args.workers, mp_context=get_context("spawn")) as pool:
         futures = {pool.submit(_generate_one, job): job for job in jobs}
@@ -107,17 +110,8 @@ def main():
                           total=len(rows), desc="audit episodes", unit="episode", file=sys.stdout):
                 pass
         (args.output / "manifest.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
-    finalize_actions(args.output, rows, args.action_mode)
-    summary = dict(episodes=len(rows), extra_demonstrations=0, status="complete")
-    if args.extra_demos:
-        augmented = augment_rows(args.output, rows, args.output / "augmentation",
-                                 workers=min(args.workers, 4), extra_demos=args.extra_demos)
-        expanded = expand_demonstrations(args.output, [row for row in rows
-                                       if row["group"] == "standard" and row["split"] == "train"])
-        all_rows = expanded + [row for row in rows if row["group"] != "standard" or row["split"] != "train"]
-        finalize_actions(args.output, all_rows, args.action_mode)
-        summary.update(extra_demonstrations=augmented["added"],
-                       train_demonstrations_per_epoch=augmented["demonstrations_per_epoch"])
+    finalize_actions(args.output, rows)
+    summary = dict(episodes=len(rows), status="complete", mode="context")
     (args.output / "generation_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     (args.output / "README.md").write_text(description.replace("Status: collecting", "Status: complete") +
                                          "\n" + json.dumps(summary, indent=2) + "\n")

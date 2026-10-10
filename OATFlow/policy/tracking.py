@@ -9,8 +9,8 @@ from torch.utils.checkpoint import checkpoint
 TCOW = Path(__file__).resolve().parents[1] / "third_party/tcow"
 sys.path[:0] = [str(TCOW / "model"), str(TCOW / "eval"), str(TCOW / "utils"), str(TCOW),
                 str(TCOW / "third_party/TimeSformer")]
-from seeker import Seeker  # noqa: E402
-from loss import MyLosses  # noqa: E402
+from seeker import Seeker as Seeker  # noqa: E402
+from loss import MyLosses as MyLosses  # noqa: E402
 
 
 def checkpoint_transformer_blocks(model):

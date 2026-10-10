@@ -97,7 +97,7 @@ def prepare_samples(episodes, items, wrist):
 
 
 class ActionChunkDataset(Dataset):
-    """LeRobot decoding with task-specific history and fixed-anchor EE targets."""
+    """LeRobot decoding with context history and absolute joint targets."""
 
     def __init__(self, root, rows, samples, videos, flow_only, wrist):
         self.root, self.rows, self.samples = root, rows, samples
@@ -130,7 +130,7 @@ def make_dataloader(dataset, batches, seed, pin_memory):
                       generator=torch.Generator().manual_seed(seed))
 
 
-def training_batches(plans, epochs, batch_size, rng, smoke_steps=0):
+def training_batches(plans, epochs, batch_size, rng):
     """Retain the existing cluster/phase shuffle and short final batches."""
     samples, groups = [], []
     episode_offset = 0
@@ -149,12 +149,24 @@ def training_batches(plans, epochs, batch_size, rng, smoke_steps=0):
                 rng.shuffle(phase_items)
                 phase_batches = [phase_items[start:start+batch_size]
                                  for start in range(0, len(phase_items), batch_size)]
-                if smoke_steps:
-                    if len(phase_batches) < 2:
-                        raise ValueError("smoke requires two batches per phase; increase cluster size")
-                    phase_batches = phase_batches[:2]
                 cluster_batches.extend(phase_batches)
             rng.shuffle(cluster_batches)
             batches.extend(cluster_batches)
         epoch_ends.append(len(batches))
     return samples, batches, epoch_ends
+
+
+def split_training_batches(batches, samples, rows, micro_batch_size):
+    """Keep logical optimizer batches while streaming small physical batches."""
+    if micro_batch_size < 1:
+        raise ValueError("positive micro batch size required")
+    physical, weights = [], []
+    for logical in batches:
+        valid_steps = sum(min(25, rows[episode]["frames"] - 1 - end)
+                          for index in logical for episode, end, active in (samples[index],) if active)
+        for start in range(0, len(logical), micro_batch_size):
+            micro = logical[start:start + micro_batch_size]
+            physical.append(micro)
+            weights.append((len(logical), valid_steps, start == 0,
+                            start + len(micro) == len(logical), start + len(micro)))
+    return physical, weights

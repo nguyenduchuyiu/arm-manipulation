@@ -1,7 +1,6 @@
 """Train the same joint policy with torchrun on up to three GPUs."""
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import timedelta
-import faulthandler
 import json
 import logging
 import multiprocessing
@@ -9,7 +8,6 @@ import os
 from pathlib import Path
 import resource
 import shutil
-import signal
 import sys
 import time
 from threading import Lock
@@ -21,17 +19,17 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm.auto import tqdm
 
 from OATFlow.policy.data import (
-    expand_demonstrations, load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
+    load_joint_episode, load_policy_episode, policy_statistics, require_wrist_data, sample_index, split_rows, training_clip,
     training_samples,
 )
 from OATFlow.policy.model import (
-    FlowMatchingHead, OATFlowPolicy, checkpoint_uses_depth, load_training_tracker, set_tracker_input,
+    OATFlowPolicy, checkpoint_uses_depth, load_training_tracker, set_tracker_input,
 )
 from OATFlow.policy.tracking import (
     MyLosses, Seeker, checkpoint_transformer_blocks, original_mask_loss,
 )
 from OATFlow.policy.train import (
-    argument_parser, save_checkpoint,
+    argument_parser, save_checkpoint, initialize_flow,
 )
 
 
@@ -92,20 +90,14 @@ def release_cluster(episodes, destination, rank):
 
 
 def main():
-    faulthandler.register(signal.SIGUSR1, all_threads=True)
-    parser = argument_parser(distributed=True)
+    parser = argument_parser()
     parser.description = __doc__
     parser.add_argument("--rank-batch-sizes", type=int, nargs="+", required=True)
     parser.add_argument("--resume", type=Path,
                         help="continue joint model weights from an epoch checkpoint; AdamW restarts")
     args = parser.parse_args()
-    if (args.wrist_weights or args.freeze_wrist_encoder) and not args.wrist_camera:
-        raise ValueError("wrist initialization/freezing requires --wrist-camera")
     if args.wrist_weights and not args.wrist_weights.is_file():
         raise FileNotFoundError(args.wrist_weights)
-    if args.contextualize:
-        if not (args.flow_only and args.wrist_camera and args.freeze_wrist_encoder and args.wrist_weights):
-            raise ValueError("contextualization requires frozen TCOW and a frozen pretrained wrist ViT")
     rank = int(os.environ["RANK"])
     world = int(os.environ["WORLD_SIZE"])
     local_rank = int(os.environ["LOCAL_RANK"])
@@ -117,8 +109,8 @@ def main():
         raise ValueError("epochs and cluster size must be positive")
     if args.config_checkpoint is None:
         raise ValueError("--config-checkpoint is required")
-    for path in (args.weights, args.flow_weights, args.config_checkpoint):
-        if not path.is_file():
+    for path in (args.weights, args.flow_weights, args.prior_checkpoint, args.config_checkpoint):
+        if path and not path.is_file():
             raise FileNotFoundError(path)
     if args.resume and not args.resume.is_file():
         raise FileNotFoundError(args.resume)
@@ -132,16 +124,11 @@ def main():
     torch.manual_seed(args.seed)
     train_rows, _ = split_rows(args.data)
     train_parents = len(train_rows)
-    train_rows = expand_demonstrations(args.data, train_rows)
     if args.wrist_camera:
         require_wrist_data(args.data, train_rows)
     train_rows = [train_rows[i] for i in rng.permutation(len(train_rows))]
     clusters = [train_rows[i:i + args.cluster_size]
                 for i in range(0, len(train_rows), args.cluster_size)]
-    if args.max_clusters:
-        clusters = clusters[:args.max_clusters]
-    if args.smoke_steps > len(clusters) * args.epochs * 4:
-        raise ValueError("eight-step smoke requires at least two clusters")
     if rank == 0:
         if args.output.exists():
             raise FileExistsError(args.output)
@@ -149,17 +136,17 @@ def main():
         (args.output / "config.json").write_text(json.dumps({
             **{k: str(v) if hasattr(v, "__fspath__") else v for k, v in vars(args).items()},
             "world_size": world, "sample_fps": 25, "context_frames": 30,
-            "action_horizon": 25, "context_stride": 10, "action_stride": 10,
+            "action_horizon": 25, "stride": 1,
             "inference_execution_steps": 10, "flow_steps": 10,
             "flow_type": "dense_action_expert", "flow_time": "beta_sinusoidal_noise_at_t0",
             "train_episodes": sum(map(len, clusters)),
-            "train_parent_episodes": len({row["parent_path"] for rows in clusters for row in rows}),
+            "train_parent_episodes": sum(map(len, clusters)),
             "available_train_parent_episodes": train_parents,
             "validation_episodes": 0,
             "validation_enabled": False,
             "visual_input": "rgb", "tcow_input_channels": 4,
             "contextualize": args.contextualize,
-            "context_tokens": 365 if args.contextualize else (701 if args.wrist_camera else 301),
+            "context_tokens": 365,
         }, indent=2) + "\n")
     dist.barrier()
     config = torch.load(args.config_checkpoint, map_location="cpu", weights_only=False, mmap=True)
@@ -167,29 +154,13 @@ def main():
     seeker_args = dict(config["seeker_args"])
     seeker_args["tracker_pretrained"] = False
     tcow = set_tracker_input(Seeker(logging.getLogger("tcow"), **seeker_args))
-    source_step = load_training_tracker(tcow, source, args.flow_only)
+    source_step = load_training_tracker(tcow, source)
     if not args.flow_only:
         checkpoint_transformer_blocks(tcow)
-    flow = FlowMatchingHead(wrist_backbone=tcow.seeker.tracker_backbone if args.wrist_camera else None,
-                            contextualize=args.contextualize)
-    imported = flow.load_pretrained(args.flow_weights)
-    if args.contextualize:
-        imported["context_initialization"] = {"initialization": "random", "layers": 4, "width": 960,
-                                              "parameters": sum(p.numel() for p in flow.context_decoder.parameters())}
-    if args.wrist_weights:
-        imported["wrist_initialization"] = flow.wrist_encoder.load_vit_base(args.wrist_weights)
-    if args.freeze_wrist_encoder:
-        flow.wrist_encoder.freeze()
-    imported["wrist_encoder_frozen"] = args.freeze_wrist_encoder
-    statistics = [policy_statistics(args.data, [r for rows in clusters for r in rows])
-                  if rank == 0 else None]
+    statistics = [policy_statistics(args.data, [r for rows in clusters for r in rows]) if rank == 0 else None]
     dist.broadcast_object_list(statistics, src=0)
-    flow.relative_actions = statistics[0].get("action_representation") == "relative_joint"
-    flow.set_statistics(statistics[0])
-    if "model" in source:
-        flow.visual.load_state_dict({k.removeprefix("flow.visual."): v for k, v in source["model"].items()
-                                     if k.startswith("flow.visual.")}, strict=True)
-        imported["visual_initialization"] = str(args.weights)
+    flow, imported, used_statistics = initialize_flow(args, tcow, statistics[0])
+    statistics = [used_statistics]
     imported["action_representation"] = flow.action_representation
     imported["tcow_input"] = {"visual_input": "rgb", "patch_channels": 4,
                               "source_patch_channels": 5 if checkpoint_uses_depth(source) else 4,
@@ -213,6 +184,13 @@ def main():
                         resumed_tensors=len(resumed["model"]), optimizer_restored=False)
         del resumed
     if rank == 0:
+        (args.output / "README.md").write_text(
+            f"# {args.output.name}\n\nDistributed joint TCOW + absolute-joint FM training.\n"
+            f"Data {args.data}; TCOW {args.weights}; config {args.config_checkpoint}; prior {args.prior_checkpoint}.\n"
+            f"Epochs {args.epochs}; global batch {args.batch_size}; rank batches {args.rank_batch_sizes}.\n"
+            f"Constant TCOW/FM LR {args.tcow_lr}/{args.flow_lr}; TCOW frozen {args.flow_only}, wrist frozen {args.freeze_wrist_encoder}.\n"
+            "30 history frames, H25/stride1, 25Hz; evaluation Euler10/K10; test not run.\n"
+            "Config: config.json, flow_initialization.json. Status: training.\n")
         (args.output / "flow_initialization.json").write_text(
             json.dumps({"import": imported, "normalization": statistics[0]}, indent=2) + "\n")
         print(json.dumps({"event": "pretrained_flow", **imported}), flush=True)
@@ -269,7 +247,7 @@ def main():
         future = (loader.submit(cache_cluster, args.data, clusters[0], shared_root / "0", args.flow_only,
                                 args.wrist_camera)
                   if rank == 0 else None)
-        with tqdm(total=args.smoke_steps or total_steps, desc="train TCOW + flow (DDP)",
+        with tqdm(total=total_steps, desc="train TCOW + flow (DDP)",
                   unit="step", mininterval=5, file=sys.stdout, disable=rank != 0) as progress:
             for cluster_index in range(len(clusters) * args.epochs):
                 cluster_id = cluster_index % len(clusters)
@@ -284,7 +262,6 @@ def main():
                                         clusters[(cluster_index + 1) % len(clusters)],
                                         shared_root / str(cluster_index + 1), args.flow_only, args.wrist_camera)
                           if rank == 0 and
-                          (not args.smoke_steps or (cluster_index + 1) * 4 < args.smoke_steps) and
                           cluster_index + 1 < len(clusters) * args.epochs else None)
                 items = [(i, end, action) for i, plan in enumerate(plans[cluster_id]) for end, action in plan]
                 for i, (_row, episode) in enumerate(episodes):
@@ -300,10 +277,6 @@ def main():
                                    for i in range(0, len(phase_items), args.batch_size)])
                 batches = phases[0] + phases[1]
                 rng.shuffle(batches)
-                if args.smoke_steps:
-                    # Exercise both branches, including a partial tail batch with an empty rank.
-                    batches = ([phases[1][0], phases[1][1], phases[1][-1], phases[1][-1]] if args.flow_only else
-                               [phases[0][0], phases[1][0], phases[0][-1], phases[1][-1]])
                 for batch in batches:
                     batch_items, count = rank_batch(batch, args.rank_batch_sizes, rank)
                     samples = [training_clip(episodes[i][1], end, action, "cuda", include_wrist=args.wrist_camera)
@@ -358,7 +331,7 @@ def main():
                         if not is_action and wrist_grad is not None:
                             raise AssertionError("mask-only batch created wrist gradients")
                         if rank == 0:
-                            print(json.dumps({"event": "gradient_smoke", "action_phase": is_action,
+                            print(json.dumps({"event": "gradients_checked", "action_phase": is_action,
                                               "latent_shape": list(latent.shape),
                                               "context_shape": list(context.shape) if context is not None else None,
                                               "patch_grad": values[0], "mask_head_grad": values[1],
@@ -379,37 +352,13 @@ def main():
                     del samples, rgbd, query, truth, proprio, action, valid, wrist
                     del noisy, tau, target, logits, velocity, latent, context
                     del action_loss, mask_loss, total
-                    if args.smoke_steps and step >= args.smoke_steps:
-                        # Compare an updated action projection and TCOW patch checksum across ranks.
-                        signature = torch.stack((model.flow.output.weight.detach().double().sum(),
-                                                 model.tcow.seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight.detach().double().sum()))
-                        signatures = [torch.zeros_like(signature) for _ in range(world)]
-                        dist.all_gather(signatures, signature)
-                        for other in signatures[1:]:
-                            torch.testing.assert_close(signatures[0], other, rtol=0, atol=0)
-                        memory = torch.tensor([torch.cuda.max_memory_reserved() / 2**30,
-                                               resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20], device="cuda")
-                        memories = [torch.zeros_like(memory) for _ in range(world)]
-                        dist.all_gather(memories, memory)
-                        if rank == 0:
-                            report = {"event": "smoke_complete", "steps": step, "world_size": world,
-                                      "rank_batch_sizes": args.rank_batch_sizes, "synchronized": True,
-                                      "expected_loss_phases_passed": checked_phases == ({True} if args.flow_only else {False, True}),
-                                      "frozen_tcow": args.flow_only,
-                                      "per_rank_peak_vram_cpu_rss_gib": [m.tolist() for m in memories]}
-                            (args.output / "smoke.json").write_text(json.dumps(report, indent=2) + "\n")
-                            print(json.dumps(report), flush=True)
-                        release_cluster(episodes, shared_root / str(cluster_index), rank)
-                        if rank == 0:
-                            shared_root.rmdir()
-                        dist.destroy_process_group()
-                        return
                 release_cluster(episodes, shared_root / str(cluster_index), rank)
                 del episodes
                 if (cluster_index + 1) % len(clusters) == 0:
                     dist.barrier()
                     if rank == 0:
-                        save_checkpoint(args.output / "latest.pt", model, resume_step + step, args)
+                        save_checkpoint(args.output / "latest.pt", model, resume_step + step, args,
+                                        epoch_ends.index(step) + 1)
                         record = {"step": resume_step + step, "resumed_run_step": step,
                                   "clusters_done": completed_epochs * len(clusters) + cluster_index + 1,
                                   "epoch": completed_epochs + cluster_index // len(clusters) + 1,
@@ -424,6 +373,8 @@ def main():
     if rank == 0:
         shared_root.rmdir()
         (args.output / "final.pt").hardlink_to(args.output / "latest.pt")
+        readme = args.output / "README.md"
+        readme.write_text(readme.read_text().replace("Status: training", "Status: complete"))
         print(json.dumps({"event": "complete", "steps": resume_step + step, "resumed_run_steps": step,
                           "elapsed_s": time.perf_counter() - started}), flush=True)
     dist.barrier()

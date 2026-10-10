@@ -12,7 +12,7 @@
 
 """OAT-Flow policy: tracking features, wrist vision, context decoder and flow matching.
 
-Module attribute names retain the state-dict layout of existing checkpoints.
+Action input/output projections use six coordinates; older padded heads require retraining.
 Upstream TCOW itself lives in third_party/tcow; tracking.py loads that dependency.
 """
 from __future__ import annotations
@@ -148,22 +148,25 @@ class ContextTransformerBlock(nn.Module):
 
 
 class ContextDecoder(nn.Module):
-    """Four transformer blocks contextualizing 365 observation tokens."""
+    """Four transformer blocks contextualizing observation tokens."""
 
-    def __init__(self):
+    def __init__(self, tokens=365):
         super().__init__()
+        self.tokens = tokens
         self.layers = nn.ModuleList([ContextTransformerBlock() for _ in range(4)])
 
-    def forward(self, context, projections):
-        if context.shape[1:] != (365, 960) or len(projections) != 8:
-            raise ValueError("context decoder requires 365 tokens and eight K/V projections")
-        positions = torch.arange(365, device=context.device)[None].expand(len(context), -1)
+    def forward(self, context, projections=None):
+        if context.shape[1:] != (self.tokens, 960) or (projections is not None and len(projections) != 8):
+            raise ValueError(f"context decoder requires {self.tokens} tokens and eight K/V projections")
+        positions = torch.arange(self.tokens, device=context.device)[None].expand(len(context), -1)
         # All tokens describe observations available now, so they can attend
         # bidirectionally. Actions and future observations never enter here.
         for layer in self.layers:
+            # ACT fits in memory; recomputation is only needed by the FM path.
             context = (checkpoint(layer, context, positions, use_reentrant=False)
-                       if self.training and torch.is_grad_enabled() else layer(context, positions))
-        return context, [projection(context) for projection in projections]
+                       if projections is not None and self.training and torch.is_grad_enabled()
+                       else layer(context, positions))
+        return context, [] if projections is None else [projection(context) for projection in projections]
 
 
 def preprocess_wrist_image(rgb, device):
@@ -226,12 +229,15 @@ class WristVisionEncoder(nn.Module):
 
     def load_vit_base(self, path):
         """Load torchvision ViT_B_16_Weights.IMAGENET1K_V1, without its classifier."""
-        source = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        report = self.load_vit_state(torch.load(path, map_location="cpu", weights_only=True, mmap=True))
+        return {**report, "path": str(path)}
+
+    def load_vit_state(self, source):
         names = {"patch.weight": "conv_proj.weight", "patch.bias": "conv_proj.bias",
                  "cls_token": "class_token", "pos_embed": "encoder.pos_embedding",
                  "norm.weight": "encoder.ln.weight", "norm.bias": "encoder.ln.bias"}
-        if len(self.blocks) != 12 or source["encoder.pos_embedding"].shape != (1, 197, 768):
-            raise ValueError("expected torchvision ImageNet ViT-B/16 at 224px")
+        if len(self.blocks) != 12 or source["encoder.pos_embedding"].shape not in ((1, 197, 768), (1, 401, 768)):
+            raise ValueError("expected torchvision ViT-B/16 at 224px or 320px")
         for i in range(12):
             for target, original in {
                 "norm1": "ln_1", "norm2": "ln_2", "attn.qkv": "self_attention.in_proj",
@@ -239,19 +245,24 @@ class WristVisionEncoder(nn.Module):
             }.items():
                 for suffix in ("weight", "bias"):
                     separator = "_" if original.endswith("in_proj") else "."
-                    names[f"blocks.{i}.{target}.{suffix}"] = f"encoder.layers.encoder_layer_{i}.{original}{separator}{suffix}"
-        if set(source) != set(names.values()) | {"heads.head.weight", "heads.head.bias"}:
+                    name = f"encoder.layers.encoder_layer_{i}.{original}{separator}{suffix}"
+                    if original in ("mlp.linear_1", "mlp.linear_2"):
+                        current = name.replace("mlp.linear_1", "mlp.0").replace("mlp.linear_2", "mlp.3")
+                        name = current if current in source else name
+                    names[f"blocks.{i}.{target}.{suffix}"] = name
+        if set(source) - {"heads.head.weight", "heads.head.bias"} != set(names.values()):
             raise ValueError("unexpected torchvision ViT-B/16 weight keys")
         state = {target: source[original] for target, original in names.items()}
-        positions = state["pos_embed"][:, 1:].transpose(1, 2).reshape(1, 768, 14, 14)
-        positions = F.interpolate(positions, size=(20, 20), mode="bicubic", align_corners=True)
-        state["pos_embed"] = torch.cat((state["pos_embed"][:, :1], positions.flatten(2).transpose(1, 2)), dim=1)
+        if state["pos_embed"].shape[1] == 197:
+            positions = state["pos_embed"][:, 1:].transpose(1, 2).reshape(1, 768, 14, 14)
+            positions = F.interpolate(positions, size=(20, 20), mode="bicubic", align_corners=True)
+            state["pos_embed"] = torch.cat((state["pos_embed"][:, :1], positions.flatten(2).transpose(1, 2)), dim=1)
         self.load_state_dict(state, strict=True)
         self.imagenet_normalization = True
-        return {"source": "torchvision.ViT_B_16_Weights.IMAGENET1K_V1", "path": str(path),
+        return {"source": "torchvision.ViT_B_16_Weights.IMAGENET1K_V1",
                 "loaded_tensors": len(state), "excluded_tensors": ["heads.head.weight", "heads.head.bias"],
                 "encoder_state_sha256": vision_state_sha256(self.state_dict()),
-                "position_grid": "14x14 -> 20x20, bicubic, align_corners=True",
+                "position_grid": "20x20 preserved" if source["encoder.pos_embedding"].shape[1] == 401 else "14x14 -> 20x20, bicubic, align_corners=True",
                 "rgb_mean": [.485, .456, .406], "rgb_std": [.229, .224, .225]}
 
     def freeze(self):
@@ -280,20 +291,18 @@ class WristVisionEncoder(nn.Module):
 
 
 class FlowMatchingHead(nn.Module):
-    """H25 flow action expert with visual and proprioceptive conditioning."""
+    """Flow action expert with visual and proprioceptive conditioning."""
 
     flow_type = "dense_action_expert"
     horizon = 25
-    noise_dim = 32
+    action_representation = "absolute_joint"
+    action_dim = 6
 
-    def __init__(self, relative_actions=False, wrist_backbone=None, contextualize=False,
-                 action_representation=None):
+    def __init__(self, wrist_backbone=None, contextualize=False, horizon=25):
         super().__init__()
-        self.action_representation = action_representation or ("relative_joint" if relative_actions else "absolute_joint")
-        if self.action_representation not in ("absolute_joint", "relative_joint", "relative_ee"):
-            raise ValueError(f"unknown action representation: {self.action_representation}")
-        self.relative_actions = self.action_representation == "relative_joint"
-        self.action_dim = 7 if self.action_representation == "relative_ee" else 6
+        if horizon < 1:
+            raise ValueError("positive action horizon required")
+        self.horizon = horizon
         self.visual = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
                                     nn.SiLU(), nn.Linear(256, 960))
         self.wrist_enabled = wrist_backbone is not None
@@ -306,7 +315,8 @@ class FlowMatchingHead(nn.Module):
             self.context_decoder = ContextDecoder()
         if self.wrist_enabled:
             self.wrist_encoder = WristVisionEncoder(wrist_backbone)
-            self.wrist_projection = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 960))
+            self.wrist_projection = deepcopy(self.visual)
+            self.overview_view_embedding = nn.Parameter(torch.randn(1, 1, 960) * .02)
             self.wrist_view_embedding = nn.Parameter(torch.randn(1, 1, 960) * .02)
         self.proprio = nn.Sequential(nn.Linear(6, 128), nn.SiLU(), nn.Linear(128, 256),
                                      nn.SiLU(), nn.Linear(256, 32))
@@ -314,8 +324,8 @@ class FlowMatchingHead(nn.Module):
         nn.init.zeros_(self.proprio[-1].weight)
         nn.init.zeros_(self.proprio[-1].bias)
         self.state_proj = nn.Linear(32, 960)
-        self.action_in_proj = nn.Linear(32, 720)
-        self.action_out_proj = nn.Linear(720, 32)
+        self.action_in_proj = nn.Linear(self.action_dim, 720)
+        self.action_out_proj = nn.Linear(720, self.action_dim)
         self.action_time_mlp_in = nn.Linear(1440, 720)
         self.action_time_mlp_out = nn.Linear(720, 720)
         self.layers = nn.ModuleList([ActionTransformerBlock(cross=i % 2 == 1) for i in range(16)])
@@ -334,11 +344,19 @@ class FlowMatchingHead(nn.Module):
         from safetensors.torch import load_file
         state = load_file(str(path))
         expected = {key for key in self.state_dict()
-                    if not key.startswith(("visual.", "proprio.", "wrist_", "context_decoder.", "state_mean", "state_std",
+                    if not key.startswith(("visual.", "proprio.", "wrist_", "overview_", "context_decoder.", "state_mean", "state_std",
                                            "action_mean", "action_std"))}
         if state.keys() != expected:
             raise ValueError(f"action expert export keys differ: missing={sorted(expected - state.keys())}, "
                              f"extra={sorted(state.keys() - expected)}")
+        if (state["action_in_proj.weight"].shape != (720, 32)
+                or state["action_out_proj.weight"].shape != (32, 720)
+                or state["action_out_proj.bias"].shape != (32,)):
+            raise ValueError("expected SmolVLA export with 32 action coordinates")
+        # Preserve pretrained weights for the six coordinates used by NexArm.
+        state["action_in_proj.weight"] = state["action_in_proj.weight"][:, :self.action_dim].contiguous()
+        state["action_out_proj.weight"] = state["action_out_proj.weight"][:self.action_dim].contiguous()
+        state["action_out_proj.bias"] = state["action_out_proj.bias"][:self.action_dim].contiguous()
         result = self.load_state_dict(state, strict=False)
         if result.unexpected_keys or set(result.missing_keys) != self.state_dict().keys() - expected:
             raise ValueError("unexpected action expert load result")
@@ -346,28 +364,74 @@ class FlowMatchingHead(nn.Module):
                 "loaded_tensors": len(state), "loaded_parameters": sum(x.numel() for x in state.values()),
                 "new_parameters": sum(v.numel() for k, v in self.named_parameters() if k not in expected),
                 "blocks": 8, "expert_layers": 16, "width": 720,
+                "action_dim": self.action_dim, "pretrained_action_dim": 32,
+                "action_projection_initialization": "first six input columns and output rows; no action padding",
                 "context_shape": [self.context_tokens, 960],
                 "wrist_tokens": self.wrist_tokens, "contextualize": self.contextualize,
                 "wrist_initialization": "TCOW spatial weights" if self.wrist_enabled else None,
                 "interaction": "bidirectional SA + dense CA"}
 
-    def conditioning(self, latent, proprio, wrist=None):
+    def load_prior(self, path):
+        source = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+        if source["architecture"] != "oracle_task_target_fm" or source["config"]["action_representation"] != "absolute_joint":
+            raise ValueError("absolute joint vision/FM prior required")
+        if not self.wrist_enabled or not self.contextualize:
+            raise ValueError("prior initialization requires wrist vision and context decoder")
+        state = source["model"]
+        if state["flow.action_out_proj.weight"].shape != (self.action_dim, 720):
+            raise ValueError("six-coordinate prior head required; retrain the older padded prior")
+        common = {key.removeprefix("flow."): value for key, value in state.items() if key.startswith("flow.")}
+        expected = {key for key in self.state_dict() if not key.startswith(("visual.", "wrist_", "overview_", "context_decoder."))}
+        if set(common) != expected:
+            raise ValueError("prior FM parameter keys differ from main FM")
+        self.load_state_dict(common, strict=False)
+        visual = {key.removeprefix("visual_projection."): value for key, value in state.items() if key.startswith("visual_projection.")}
+        self.visual.load_state_dict(visual, strict=True)
+        self.wrist_projection.load_state_dict(visual, strict=True)
+        decoder = {key.removeprefix("context_decoder."): value for key, value in state.items() if key.startswith("context_decoder.")}
+        self.context_decoder.load_state_dict(decoder, strict=True)
+        vision = {key.removeprefix("vision_encoder."): value for key, value in state.items() if key.startswith("vision_encoder.")}
+        vision_report = self.wrist_encoder.load_vit_state(vision)
+        with torch.no_grad():
+            self.overview_view_embedding.copy_(state["view_embedding"][0:1])
+            self.wrist_view_embedding.copy_(state["view_embedding"][1:2])
+        statistics = dict(source["config"]["statistics"])
+        self.set_statistics(statistics)
+        return dict(source=str(path), source_step=source["step"], source_epoch=source["epoch"],
+                    loaded_fm_tensors=len(common), loaded_visual_tensors=len(visual),
+                    loaded_context_tensors=len(decoder), wrist_initialization=vision_report,
+                    context_shape=[self.context_tokens, 960], normalization=statistics,
+                    excluded=["task_embedding", "target_embedding", "overview vision backbone"],
+                    overview_initialization="TCOW pretrained backbone; prior visual adapter")
+
+    def encode_wrist(self, wrist):
+        features = self.wrist_encoder(wrist)
+        if self.contextualize:
+            grid = features.transpose(1, 2).reshape(len(wrist), 768, 20, 20)
+            features = F.adaptive_avg_pool2d(grid, (8, 8)).flatten(2).transpose(1, 2)
+        return features
+
+    def conditioning(self, latent, proprio, wrist=None, wrist_features=None):
         if latent.shape[1:] != (300, 768) or proprio.shape[1:] != (6,):
             raise ValueError("expected TCOW [B,300,768] and proprio [B,6]")
         state = (proprio - self.state_mean) / self.state_std
         padded = F.pad(state, (0, 26)) + self.proprio(state)
         visual = [self.visual(latent)]
         if self.wrist_enabled:
-            if wrist is None:
+            visual[0] = visual[0] + self.overview_view_embedding
+        if self.wrist_enabled:
+            if wrist is None and wrist_features is None:
                 raise ValueError("wrist-enabled policy requires current wrist RGB")
-            if len(wrist) != len(latent):
-                raise ValueError("wrist and TCOW batch sizes differ")
-            wrist_features = self.wrist_encoder(wrist)
-            if self.contextualize:
-                grid = wrist_features.transpose(1, 2).reshape(len(wrist), 768, 20, 20)
-                wrist_features = F.adaptive_avg_pool2d(grid, (8, 8)).flatten(2).transpose(1, 2)
+            if wrist_features is None:
+                if len(wrist) != len(latent):
+                    raise ValueError("wrist and TCOW batch sizes differ")
+                wrist_features = self.encode_wrist(wrist)
+            elif wrist is not None:
+                raise ValueError("supply either wrist RGB or cached features")
+            if wrist_features.shape != (len(latent), self.wrist_tokens, 768):
+                raise ValueError("cached wrist feature shape differs from policy")
             visual.append(self.wrist_projection(wrist_features) + self.wrist_view_embedding)
-        elif wrist is not None:
+        elif wrist is not None or wrist_features is not None:
             raise ValueError("checkpoint has no wrist encoder")
         context = torch.cat((*visual, self.state_proj(padded)[:, None]), dim=1)
         if self.contextualize:
@@ -375,12 +439,8 @@ class FlowMatchingHead(nn.Module):
         return context, [projection(context) for projection in self.context_projections]
 
     def set_statistics(self, statistics):
-        representation = statistics.get("action_representation", "absolute_joint")
-        if representation not in ("absolute_joint", "relative_joint", "relative_ee"):
-            raise ValueError(f"unknown action representation: {representation}")
-        self.action_representation = representation
-        self.relative_actions = representation == "relative_joint"
-        self.action_dim = 7 if representation == "relative_ee" else 6
+        if statistics.get("action_representation") != "absolute_joint":
+            raise ValueError("absolute joint normalization required")
         for name in ("state_mean", "state_std", "action_mean", "action_std"):
             value = torch.as_tensor(statistics[name], dtype=torch.float32)
             expected = self.action_dim if name.startswith("action") else 6
@@ -391,8 +451,8 @@ class FlowMatchingHead(nn.Module):
             setattr(self, name, value.to(getattr(self, name).device).clone())
 
     def velocity(self, noisy_action, time, context_kv):
-        if noisy_action.shape[1:] != (25, 32):
-            raise ValueError("action expert uses padded [B,25,32] noisy actions")
+        if noisy_action.shape[1:] != (self.horizon, self.action_dim):
+            raise ValueError(f"action expert requires [B,{self.horizon},6] noisy actions")
         embedded = self.action_in_proj(noisy_action)
         fraction = torch.linspace(0, 1, 360, device=time.device,
                                   dtype=torch.float32 if time.device.type == "mps" else torch.float64)
@@ -402,105 +462,47 @@ class FlowMatchingHead(nn.Module):
         time_emb = torch.cat((phase.sin(), phase.cos()), dim=-1).to(embedded.dtype)
         x = torch.cat((embedded, time_emb[:, None].expand_as(embedded)), dim=-1)
         x = self.action_time_mlp_out(F.silu(self.action_time_mlp_in(x)))
-        positions = torch.arange(25, device=x.device)[None].expand(len(x), -1)
+        positions = torch.arange(self.horizon, device=x.device)[None].expand(len(x), -1)
         for index, kv in enumerate(context_kv):
             x = self.layers[2 * index](x, positions)
             x = self.layers[2 * index + 1](x, positions, kv)
         return -self.action_out_proj(self.norm(x))
 
-    def forward(self, latent, proprio, noisy_action, time, wrist=None):
-        context, kv = self.conditioning(latent, proprio, wrist)
-        return self.velocity(noisy_action, time, kv)[:, :, :self.action_dim], context
+    def forward(self, latent, proprio, noisy_action, time, wrist=None, wrist_features=None):
+        context, kv = self.conditioning(latent, proprio, wrist, wrist_features)
+        return self.velocity(noisy_action, time, kv), context
 
     def sample_noise(self, batch, device, generator=None):
-        return torch.randn((batch, 25, 32), generator=generator, device=device)
+        return torch.randn((batch, self.horizon, self.action_dim), generator=generator, device=device)
 
     def training_path(self, action):
-        if action.shape[1:] != (25, self.action_dim):
-            raise ValueError(f"expected H25 actions with {self.action_dim} coordinates")
+        if action.shape[1:] != (self.horizon, self.action_dim):
+            raise ValueError(f"expected H{self.horizon} actions with {self.action_dim} coordinates")
         normalized = (action - self.action_mean) / self.action_std
-        padded = F.pad(normalized, (0, self.noise_dim - self.action_dim))
-        noise = torch.randn_like(padded)
+        noise = torch.randn_like(normalized)
         smol_time = torch.distributions.Beta(1.5, 1.0).sample((len(action),)).to(action.device) * .999 + .001
         time = 1 - smol_time
-        noisy = (1 - time[:, None, None]) * noise + time[:, None, None] * padded
-        return noisy, time, normalized - noise[:, :, :self.action_dim]
+        noisy = (1 - time[:, None, None]) * noise + time[:, None, None] * normalized
+        return noisy, time, normalized - noise
 
     def sample(self, latent, proprio, noise, steps=10, wrist=None):
         _, kv = (self.conditioning(latent, proprio) if wrist is None else
                  self.conditioning(latent, proprio, wrist))
-        estimate = noise.float()
-        # Original SmolVLA Euler grid: t_smol=1, .9, ..., .1 for ten steps.
+        return self.sample_actions(noise, kv, steps)
+
+    @torch.no_grad()
+    def sample_actions(self, noise, context_kv, steps=10):
+        if steps < 1:
+            raise ValueError("positive flow steps required")
+        if noise.shape[1:] != (self.horizon, self.action_dim):
+            raise ValueError(f"action noise must have shape [B,{self.horizon},6]")
+        estimate = noise.float().clone()
         for index in range(steps):
-            time = torch.full((len(noise),), index / steps, device=noise.device)
-            estimate = estimate + self.velocity(estimate, time, kv).float() / steps
-        action = estimate[:, :, :self.action_dim] * self.action_std + self.action_mean
-        if self.relative_actions:
-            action = action.clone()
-            action[:, :, :5] += proprio[:, None, :5]
-        return action
-
-
-class LegacyFlowHead(nn.Module):
-    """Restore the original dense-head checkpoints for experiment comparison."""
-
-    flow_type = "dense"
-    context_tokens = 301
-    def __init__(self, width: int = 256, horizon: int = 25):
-        super().__init__()
-        self.horizon = horizon
-        self.visual = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, width))
-        self.proprio = nn.Sequential(nn.Linear(6, 128), nn.SiLU(), nn.Linear(128, width))
-        self.action = nn.Linear(6, width)
-        self.action_position = nn.Parameter(torch.randn(1, horizon, width) * .02)
-        self.action_time_mlp_in = nn.Linear(width * 2, width)
-        self.action_time_mlp_out = nn.Linear(width, width)
-        self.blocks = nn.ModuleList([
-            nn.TransformerDecoderLayer(width, 8, 1024, dropout=0.0,
-                                       activation="gelu", batch_first=True, norm_first=True)
-            for _ in range(3)
-        ])
-        self.norm = nn.LayerNorm(width)
-        self.output = nn.Linear(width, 6)
-
-    def forward(self, latent: torch.Tensor, proprio: torch.Tensor,
-                noisy_action: torch.Tensor, time: torch.Tensor):
-        if latent.shape[1:] != (300, 768) or proprio.shape[1:] != (6,):
-            raise ValueError(f"expected [B,300,768] and [B,6], got {latent.shape}, {proprio.shape}")
-        context = torch.cat((self.visual(latent), self.proprio(proprio)[:, None]), dim=1)
-        half = self.action.out_features // 2
-        time_dtype = torch.float32 if time.device.type == "mps" else torch.float64
-        fraction = torch.linspace(0, 1, half, device=time.device, dtype=time_dtype)
-        period = 4e-3 * (4.0 / 4e-3) ** fraction
-        # Our path runs noise -> action; SmolVLA's time runs action -> noise.
-        phase = (1 - time.to(time_dtype))[:, None] * (2 * math.pi / period)[None]
-        action_embedding = self.action(noisy_action)
-        time_embedding = torch.cat((phase.sin(), phase.cos()), dim=-1).to(action_embedding.dtype)
-        x = torch.cat((action_embedding, time_embedding[:, None].expand_as(action_embedding)), dim=-1)
-        x = self.action_time_mlp_out(torch.nn.functional.silu(self.action_time_mlp_in(x)))
-        x = x + self.action_position
-        for block in self.blocks:
-            x = block(x, context)
-        return self.output(self.norm(x)), context
-
-    def sample(self, latent: torch.Tensor, proprio: torch.Tensor,
-               noise: torch.Tensor, steps: int = 8):
-        estimate = noise.float()
-        for step in range(steps):
-            time = torch.full((len(noise),), (step + .5) / steps, device=noise.device)
-            velocity, _ = self(latent, proprio, estimate, time)
-            estimate = estimate + velocity.float() / steps
-        return estimate
-
-    def sample_noise(self, batch, device, generator=None):
-        return torch.randn((batch, self.horizon, 6), generator=generator, device=device)
-
-    def training_path(self, action):
-        noise = torch.randn_like(action)
-        smol_time = torch.distributions.Beta(1.5, 1.0).sample((len(action),)).to(action.device) * .999 + .001
-        time = 1 - smol_time
-        noisy = (1 - time[:, None, None]) * noise + time[:, None, None] * action
-        return noisy, time, action - noise
+            fraction = index / steps
+            time = torch.full((len(noise),), fraction, device=noise.device)
+            velocity = self.velocity(estimate, time, context_kv).float()
+            estimate += velocity / steps
+        return estimate * self.action_std + self.action_mean
 
 
 class OATFlowPolicy(nn.Module):
@@ -531,18 +533,11 @@ class OATFlowPolicy(nn.Module):
 
 
 def restore_policy(seeker, checkpoint):
-    set_tracker_input(seeker, depth=checkpoint_uses_depth(checkpoint))
-    flow_type = checkpoint.get("flow_type", "dense")
-    if flow_type == "dense_action_expert":
-        flow = FlowMatchingHead(
-            relative_actions=checkpoint.get("action_representation") == "relative_joint",
-            wrist_backbone=seeker.seeker.tracker_backbone if checkpoint.get("wrist_camera", False) else None,
-            contextualize=checkpoint.get("contextualize", False),
-            action_representation=checkpoint.get("action_representation", "absolute_joint"))
-    elif flow_type == "dense":
-        flow = LegacyFlowHead()
-    else:
-        raise ValueError(f"unknown flow architecture: {flow_type}")
+    if (checkpoint["flow_type"] != "dense_action_expert" or checkpoint["action_representation"] != "absolute_joint"
+            or not checkpoint["wrist_camera"] or not checkpoint["contextualize"]):
+        raise ValueError("absolute joint TCOW/wrist/context-decoder checkpoint required")
+    set_tracker_input(seeker)
+    flow = FlowMatchingHead(wrist_backbone=seeker.seeker.tracker_backbone, contextualize=True)
     if checkpoint.get("wrist_camera", False):
         flow.wrist_encoder.imagenet_normalization = checkpoint.get("wrist_imagenet_normalization", False)
         if checkpoint.get("wrist_encoder_frozen", False):
@@ -555,10 +550,8 @@ def restore_policy(seeker, checkpoint):
     return model
 
 
-def load_training_tracker(seeker, source, flow_only):
+def load_training_tracker(seeker, source):
     if "model" in source:
-        if not flow_only:
-            raise ValueError("joint initialization requires frozen TCOW")
         state = {key.removeprefix("tcow."): value for key, value in source["model"].items()
                  if key.startswith("tcow.")}
         step = source["step"]
@@ -589,27 +582,21 @@ def checkpoint_uses_depth(checkpoint):
     return channels == 5
 
 
-def set_tracker_input(seeker, depth=False):
+def set_tracker_input(seeker):
     backbone = seeker.seeker.tracker_backbone
     patch = backbone.timesformer.model.patch_embed
     old = patch.proj
-    channels = 5 if depth else 4
     if old.in_channels not in (4, 5):
-        raise ValueError("expected 4 or 5 TCOW patch channels")
-    if old.in_channels != channels:
-        new = nn.Conv2d(channels, old.out_channels, old.kernel_size, old.stride,
+        raise ValueError("expected four or five TCOW patch channels")
+    if old.in_channels == 5:
+        new = nn.Conv2d(4, old.out_channels, old.kernel_size, old.stride,
                         old.padding, old.dilation, old.groups, old.bias is not None,
                         device=old.weight.device, dtype=old.weight.dtype)
         with torch.no_grad():
-            if depth:
-                new.weight.zero_()
-                new.weight[:, :3].copy_(old.weight[:, :3])
-                new.weight[:, 4].copy_(old.weight[:, 3])
-            else:
-                new.weight.copy_(old.weight[:, [0, 1, 2, 4]])
+            new.weight.copy_(old.weight[:, [0, 1, 2, 4]])
             if old.bias is not None:
                 new.bias.copy_(old.bias)
         patch.proj = new
-    seeker.seeker.input_channels = channels
-    backbone.Ci = channels
+    seeker.seeker.input_channels = 4
+    backbone.Ci = 4
     return seeker
