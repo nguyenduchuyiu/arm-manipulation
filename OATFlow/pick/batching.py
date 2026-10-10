@@ -1,5 +1,7 @@
 """Cover all 24 object permutations in each full minibatch."""
 import numpy as np
+import sys
+from tqdm.auto import tqdm
 
 
 def combinatorial_batches(plans, epochs, batch_size, rng):
@@ -21,7 +23,7 @@ def combinatorial_batches(plans, epochs, batch_size, rng):
         groups.append(queues)
         offset += 96
     batches, epoch_ends = [], []
-    for _ in range(epochs):
+    for _ in tqdm(range(epochs), desc="plan training epochs", mininterval=5, file=sys.stdout):
         for group_index in rng.permutation(len(groups)):
             queues = [rng.permutation(items).tolist() for items in groups[group_index]]
             full_batches = sum(map(len, queues)) // batch_size
