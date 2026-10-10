@@ -86,7 +86,7 @@ def main():
     parser.add_argument("--vision-cache", type=Path, help="frozen ViT token cache from OATFlow.prior.features")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--vision-weights", type=Path, required=True)
-    parser.add_argument("--flow-weights", type=Path, required=True)
+    parser.add_argument("--flow-weights", type=Path, help="pretrained action expert; required only for FM")
     parser.add_argument("--action-head", choices=('fm', 'act'), default='fm')
     parser.add_argument("--resume", type=Path, help="restore policy and optimizer; --epochs counts additional epochs")
     parser.add_argument("--restart-scheduler", action="store_true",
@@ -99,6 +99,10 @@ def main():
     parser.add_argument("--warmup-steps", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    if args.action_head == 'fm' and args.flow_weights is None:
+        parser.error('--flow-weights required for FM')
+    if args.action_head == 'act' and args.flow_weights is not None:
+        parser.error('ACT initializes from scratch; omit --flow-weights')
     if args.restart_scheduler and args.resume is None:
         raise ValueError("scheduler restart requires --resume")
     if not torch.cuda.is_available():
@@ -124,7 +128,7 @@ def main():
     if statistics["action_representation"] != "absolute_joint":
         raise ValueError("absolute joint data required")
     representation, action_file = "absolute_joint", "supervision.npz"
-    for path in (args.vision_weights, args.flow_weights):
+    for path in (args.vision_weights, *([args.flow_weights] if args.flow_weights is not None else [])):
         if not path.is_file():
             raise FileNotFoundError(path)
     torch.set_num_threads(4)

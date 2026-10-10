@@ -15,12 +15,12 @@ python -m OATFlow.prior.features --data "$PICK_DATA" \
 
 python -m OATFlow.prior.train --data "$PICK_DATA" \
   --vision-cache "$VIT_CACHE" --output "$PICK_CHECKPOINTS" \
-  --vision-weights "$VIT_WEIGHTS" --flow-weights "$FLOW_EXPERT" \
+  --vision-weights "$VIT_WEIGHTS" \
   --action-head act --horizon 50 --epochs 10 --batch-size 256 \
   --lr 1e-4 --min-lr 3e-6 --warmup-steps 500
 ```
 
-Use fresh output directories and keep artifacts outside the repository. Every valid expert frame starts a chunk (stride 1), including short masked terminal chunks. All full training batches cover the 24 permutations; every chunk is used once per epoch. Change `--action-head act` to `fm` for flow matching. Both use the same frozen ViT cache and trainable conditioning stack; details are in [prior/README.md](../prior/README.md).
+Use fresh output directories and keep artifacts outside the repository. Every valid expert frame starts a chunk (stride 1), including short masked terminal chunks. All full training batches cover the 24 permutations; every chunk is used once per epoch. ACT and its full conditioning stack, including proprio projection, initialize from scratch; only ViT loads pretrained weights. Change `--action-head act` to `fm` and add `--flow-weights "$FLOW_EXPERT"` for flow matching. Both use the same frozen ViT cache and trainable conditioning stack; details are in [prior/README.md](../prior/README.md).
 
 ```bash
 python -m OATFlow.pick.evaluate --data "$PICK_DATA" \

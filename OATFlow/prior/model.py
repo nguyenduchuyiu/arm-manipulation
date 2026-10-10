@@ -24,14 +24,10 @@ class PriorPolicy(nn.Module):
             self.visual_projection = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
                                                   nn.SiLU(), nn.Linear(256, 960))
             self.initialization = dict(action_head='ACT CVAE; random initialization',
-                                       width=512, decoder_layers=1, posterior_layers=4, latent_dim=32, kl_weight=10.)
+                                       width=512, decoder_layers=1, posterior_layers=4, latent_dim=32, kl_weight=10.,
+                                       state_projection_source='random initialization', loaded_tensors=0)
             if flow_weights:
-                from safetensors import safe_open
-                with safe_open(str(flow_weights), framework='pt', device='cpu') as source:
-                    state = {name: source.get_tensor('state_proj.' + name) for name in ('weight', 'bias')}
-                self.act.state_proj.load_state_dict(state, strict=True)
-                self.initialization.update(state_projection_source=str(flow_weights),
-                                           loaded_tensors=2, loaded_parameters=sum(value.numel() for value in state.values()))
+                raise ValueError('ACT initializes all conditioning and action parameters from scratch; omit flow weights')
         self.vision_encoder = vit_b_16(image_size=320)
         self.vision_encoder.heads = nn.Identity()
         if vision_weights:
