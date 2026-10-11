@@ -1,5 +1,16 @@
 # Vision manipulation prior
 
+For pick phase sampling, pass `--sampling phase` to both caching and training.
+The first 20 valid action frames use stride 1; later `approach` frames use stride 5.
+Engage/contact, close/grasp, lift and hold remain stride 1. H50 targets always contain
+consecutive 25 Hz actions; sampling changes only chunk starts. Feature storage defaults
+to FP16. Use `--feature-cache-gpus 1 2` with `CUDA_VISIBLE_DEVICES=4,6,7` to train
+on physical GPU4 and cache complete layouts on GPU6/7 (up to 21.5 GiB each).
+Remaining layouts are staged in at most 24 GiB RAM before training, so feature
+reads during training do not access NFS. This mode uses native DataLoader with
+zero workers because its feature tensors already live on GPUs. Persisted cache
+shards remain available for restarting; temporary RAM staging is released at exit.
+
 A frozen shared ViT-B/16 encodes the current overview and wrist images into 64 tokens per view. Task, target and proprio tokens pass through four context decoder blocks. Actions are six absolute joint setpoints: five arm joints and gripper. TCOW is introduced separately in the main policy.
 
 Every valid expert frame starts a chunk (stride 1). Labels and observed proprio anchors are read directly from `supervision.npz` and `observation.npz`. Context and terminal observations are excluded from action supervision; short terminal chunks repeat the last command and mask padded steps. H25 and H50 are supported. No chunk export is needed.

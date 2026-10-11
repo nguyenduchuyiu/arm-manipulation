@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 from lerobot.optim.schedulers import CosineDecayWithWarmupSchedulerConfig
 
@@ -18,24 +18,37 @@ from OATFlow.policy.loader import LeRobotVideoFrames, cache_videos, make_dataloa
 
 
 @lru_cache(maxsize=128)
-def episode_arrays(path, horizon=25):
+def episode_arrays(path, horizon=25, sampling="dense"):
     meta = json.loads((path / "episode.json").read_text())
     with np.load(path / "supervision.npz") as z:
         action, valid = z["expert_action"], z["action_valid"]
+        phases = z["phase"] if sampling == "phase" else None
     with np.load(path / "observation.npz") as z:
         state = z["joint_position"]
     if horizon < 1:
         raise ValueError("positive action horizon required")
     starts, stop = chunk_starts(valid, meta["decision_frames"]["t_occ"], path.name)
+    if sampling == "phase":
+        starts = phase_starts(starts, phases)
+    elif sampling != "dense":
+        raise ValueError("sampling must be dense or phase")
     indices = starts[:, None] + np.arange(horizon)
     return dict(starts=starts, action=action[np.minimum(indices, stop - 1)].copy(),
                 valid=indices < stop, joint_anchor=state[starts].copy(), meta=meta)
 
 
+def phase_starts(starts, phases):
+    """Keep the first 20 valid frames and all engagement/grasp frames densely."""
+    offset = np.arange(len(starts))
+    approach = np.array([str(phase).rsplit("_", 1)[-1] == "approach" for phase in phases[starts]])
+    return starts[(offset < 20) | ~approach | ((offset - 20) % 5 == 0)]
+
+
 class PriorDataset(Dataset):
-    def __init__(self, root, rows, samples, videos, horizon=25):
+    def __init__(self, root, rows, samples, videos, horizon=25, sampling="dense"):
         self.root, self.rows, self.samples, self.videos = root, rows, samples, videos
         self.horizon = horizon
+        self.sampling = sampling
 
     def __len__(self):
         return len(self.samples)
@@ -48,7 +61,7 @@ class PriorDataset(Dataset):
         decoded = {}
         for episode in {item[0] for item in items}:
             path = self.root / self.rows[episode]["path"]
-            arrays = episode_arrays(path, self.horizon)
+            arrays = episode_arrays(path, self.horizon, self.sampling)
             chunks = sorted({item[1] for item in items if item[0] == episode})
             frames = arrays["starts"][chunks]
             views = [LeRobotVideoFrames(self.videos[(path / name).resolve()], arrays["meta"]["frames"], (320, 320))[frames]
@@ -84,6 +97,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--vision-cache", type=Path, help="frozen ViT token cache from OATFlow.prior.features")
+    parser.add_argument("--feature-cache-gpus", type=int, nargs="+",
+                        help="logical GPUs other than GPU0; cache complete layouts there and the remainder in RAM")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--vision-weights", type=Path, required=True)
     parser.add_argument("--flow-weights", type=Path, help="pretrained action expert; required only for FM")
@@ -94,6 +109,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--horizon", type=int, default=25, choices=(25, 50))
+    parser.add_argument("--sampling", choices=("dense", "phase"), default="dense",
+                        help="phase: first 20 valid frames and non-approach stride1; remaining approach stride5")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--min-lr", type=float, default=3e-6)
     parser.add_argument("--warmup-steps", type=int, default=500)
@@ -147,10 +164,14 @@ def main():
         if Path(source_config["data"]).resolve() != args.data.resolve() or any(
                 source_config[name] != getattr(args, name) for name in fixed):
             raise ValueError("resume data, batch, seed or LR configuration differs")
-        if source_config.get("stride") != 1:
-            raise ValueError("resume requires stride1 training")
+        if source_config.get("sampling", "dense") != args.sampling:
+            raise ValueError("resume sampling differs")
         start_epoch, source_step = resumed["epoch"], resumed["step"]
     collection = json.loads((args.data / "collection.json").read_text())
+    if args.feature_cache_gpus and (args.vision_cache is None or collection.get("objective") != "target_lift"):
+        raise ValueError("GPU feature cache requires cached pick data")
+    if args.sampling == "phase" and collection.get("objective") != "target_lift":
+        raise ValueError("phase sampling requires pick data")
     cluster_size = 96 if collection.get("objective") == "target_lift" else 4
     rng = np.random.default_rng(args.seed)
     if cluster_size == 96:
@@ -167,7 +188,7 @@ def main():
                 raise ValueError("pick rows must be ordered by permutation and target")
     for start in tqdm(range(0, len(rows), cluster_size), desc="index prior chunks", file=sys.stdout):
         plans.append([[(index, True) for index in range(len(episode_arrays(
-                          args.data / row["path"], args.horizon)["starts"]))]
+                          args.data / row["path"], args.horizon, args.sampling)["starts"]))]
                       for row in rows[start:start + cluster_size]])
     scheduler_start_step = source_step if args.restart_scheduler else source_config.get("scheduler_start_step", 0) if resumed is not None else 0
     scheduler_start_epoch = start_epoch if args.restart_scheduler else source_config.get("scheduler_start_epoch", 0) if resumed is not None else 0
@@ -232,7 +253,8 @@ def main():
               "action_representation": representation, "action_dim": model.head.action_dim,
               "action_input_dim": model.head.action_dim, "action_output_dim": model.head.action_dim,
               "action_padding": False,
-              "action_file": action_file, "horizon": args.horizon, "stride": 1,
+              "action_file": action_file, "horizon": args.horizon,
+              "stride": 1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage_close_lift_hold=1),
               "flow_steps": 10 if args.action_head == 'fm' else 0,
               "context_activation_checkpointing": args.action_head == 'fm',
               "demos": len(rows), "chunks_per_epoch": len(samples),
@@ -267,19 +289,29 @@ def main():
         f"Continuation: {args.resume}; epochs {start_epoch + 1}–{start_epoch + args.epochs}; "
         f"{len(batches)} additional updates from step {source_step}, policy and optimizer restored when resuming.\n"
         f"Actions: H{args.horizon} {representation}, absolute gripper, 25Hz; inference {config.get('act', {}).get('inference', 'Euler10')}.\n"
-        "Chunks start at every valid expert frame (stride1); short tails are masked.\n"
+        f"Sampling: {config['stride']}; short tails are masked; action labels remain consecutive25Hz frames.\n"
         f"Objective: {config['objective']}; collection/geometry settings in config.json.\n"
         f"Batching: {config['batching']}.\n"
         "Test: held-out simulation success not run. Config: config.json, flow_initialization.json. Status: training.\n")
     dataset_class = PriorDataset
     if args.vision_cache is not None:
         from OATFlow.prior.features import CachedPriorDataset, load_cache
+        cache_config = json.loads((args.vision_cache / "config.json").read_text())
+        if cache_config.get("sampling", "dense") != args.sampling:
+            raise ValueError("feature cache sampling differs from training")
         videos = load_cache(args.vision_cache, args.data, args.vision_weights, rows)
         dataset_class = CachedPriorDataset
     else:
         videos, video_gib = cache_videos(args.data, rows, True)
         (args.output / "video_cache.json").write_text(json.dumps(dict(directory=str(Path(next(iter(videos.values()))).parent), gib=video_gib), indent=2))
-    loader = make_dataloader(dataset_class(args.data, rows, samples, videos, args.horizon), batches, args.seed, True)
+    dataset = dataset_class(args.data, rows, samples, videos, args.horizon, args.sampling)
+    if args.feature_cache_gpus:
+        placement = dataset.preload_to_gpus(args.feature_cache_gpus)
+        (args.output / "feature_cache_placement.json").write_text(json.dumps(placement, indent=2) + "\n")
+        print(json.dumps(dict(event="feature_cache_staged", **placement)), flush=True)
+        loader = DataLoader(dataset, batch_sampler=batches, num_workers=0, pin_memory=False)
+    else:
+        loader = make_dataloader(dataset, batches, args.seed, True)
     started = time.perf_counter()
     history = []
     loss_sum, loss_count = 0., 0
@@ -356,6 +388,8 @@ def main():
         del loader
         if args.vision_cache is None:
             release_videos(videos)
+        elif args.feature_cache_gpus:
+            dataset.release_device_cache()
 
 
 if __name__ == "__main__":

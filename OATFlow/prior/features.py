@@ -65,11 +65,68 @@ def retire_cached_shard(previous, replacement):
 
 
 class CachedPriorDataset(PriorDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gpu_shards = {}
+        self.ram_directory = None
+
+    def preload_to_gpus(self, devices):
+        """Keep complete layout batches on one GPU; put remaining layouts in RAM."""
+        if len(set(devices)) != len(devices) or not devices or 0 in devices:
+            raise ValueError("feature GPUs must be distinct from training GPU0")
+        budget = int(21.5 * 2**30)
+        used = {device: 0 for device in devices}
+        for device in devices:
+            if torch.cuda.mem_get_info(device)[0] < budget + 256 * 2**20:
+                raise MemoryError(f"GPU{device} needs 21.5GiB free plus headroom")
+        groups = {}
+        for row in self.rows:
+            groups.setdefault(row["seed"], []).append(row)
+        placements, ram_bytes = [], 0
+        for rows in groups.values():
+            sizes = [sum(shard(self.videos[row["path"]])[key].numel() *
+                         shard(self.videos[row["path"]])[key].element_size()
+                         for key in ("overview", "wrist")) for row in rows]
+            size = sum(sizes)
+            device = next((device for device in devices if used[device] + size <= budget), None)
+            if device is None:
+                ram_bytes += sum(self.videos[row["path"]].stat().st_size for row in rows)
+            else:
+                used[device] += size
+            placements.append((rows, device))
+        shard.cache_clear()
+        if ram_bytes > 24 * 2**30 or shutil.disk_usage("/dev/shm").free < ram_bytes + 4 * 2**30:
+            raise MemoryError("remaining feature layouts need at most24GiB RAM plus4GiB IPC headroom")
+        self.ram_directory = Path(tempfile.mkdtemp(prefix="oatflow_prior_gpu_", dir="/dev/shm"))
+        for rows, device in tqdm(placements, desc="stage ViT GPU/RAM layouts", file=sys.stdout, mininterval=5):
+            for row in rows:
+                key = row["path"]
+                if device is None:
+                    destination = self.ram_directory / self.videos[key].name
+                    shutil.copyfile(self.videos[key], destination)
+                    self.videos[key] = destination
+                else:
+                    cached = shard(self.videos[key])
+                    self.gpu_shards[key] = dict(starts=cached["starts"].clone(),
+                        **{name: cached[name].to(f"cuda:{device}") for name in ("overview", "wrist")})
+            shard.cache_clear()
+        return dict(gpu_bytes={str(device): size for device, size in used.items()},
+                    ram_bytes=ram_bytes, ram_directory=str(self.ram_directory),
+                    network_feature_reads_during_training=False,
+                    batching="complete layouts on one device; native DataLoader with zero workers")
+
+    def release_device_cache(self):
+        self.gpu_shards.clear()
+        shard.cache_clear()
+        if self.ram_directory is not None:
+            shutil.rmtree(self.ram_directory)
+
     def __getitem__(self, index):
         episode, chunk, _active = self.samples[index]
         row = self.rows[episode]
-        arrays = episode_arrays(self.root / row["path"], self.horizon)
-        cached = shard(self.videos[row["path"]])
+        arrays = episode_arrays(self.root / row["path"], self.horizon, self.sampling)
+        cached = (self.gpu_shards[row["path"]] if row["path"] in self.gpu_shards
+                  else shard(self.videos[row["path"]]))
         if not np.array_equal(cached["starts"].numpy(), arrays["starts"]):
             raise ValueError("cached feature/action frame mismatch")
         return (cached["overview"][chunk].float(), cached["wrist"][chunk].float(),
@@ -98,8 +155,9 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--ram-gib", type=int, default=10,
                         help="token bytes in /dev/shm; remaining shards on disk")
-    parser.add_argument("--dtype", choices=("float32", "float16"), default="float32",
+    parser.add_argument("--dtype", choices=("float32", "float16"), default="float16",
                         help="token storage precision; float16 trades small rounding error for half the space")
+    parser.add_argument("--sampling", choices=("dense", "phase"), default="dense")
     parser.add_argument("--reuse-cache", type=Path,
                         help="reuse matching frames from a complete cache of the same data/vision weights")
     parser.add_argument("--retire-reuse-cache", action="store_true",
@@ -111,7 +169,7 @@ def main():
         raise FileExistsError(args.output)
     rows = [json.loads(line) for line in (args.data / "manifest.jsonl").read_text().splitlines()]
     rows = [r for r in rows if r["split"] == "train" and r["group"] == "standard"]
-    starts_by_path = {r["path"]: episode_arrays(args.data / r["path"])["starts"]
+    starts_by_path = {r["path"]: episode_arrays(args.data / r["path"], sampling=args.sampling)["starts"]
                       for r in tqdm(rows, desc="index expert frames", file=sys.stdout, mininterval=5)}
     episode_arrays.cache_clear()
     storage_dtype = getattr(torch, args.dtype)
@@ -142,7 +200,9 @@ def main():
     model = PriorPolicy(args.vision_weights).cuda().eval()
     args.output.mkdir(parents=True)
     ram_directory = Path(tempfile.mkdtemp(prefix="oatflow_prior_", dir="/dev/shm"))
-    config = dict(data=str(args.data), stride=1, vision_weights=str(args.vision_weights),
+    config = dict(data=str(args.data), sampling=args.sampling,
+                  stride=1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage_close_lift_hold=1),
+                  vision_weights=str(args.vision_weights),
                   sources=sources(args.data, args.vision_weights), dtype=args.dtype,
                   precision="lossless encoder outputs" if args.dtype == "float32" else "rounded to float16 for storage; restored to float32 before adapters",
                   ram_directory=str(ram_directory), ram_budget_bytes=ram_budget,
