@@ -71,7 +71,7 @@ class CachedPriorDataset(PriorDataset):
         self.ram_directory = None
 
     def preload_to_gpus(self, devices):
-        """Keep complete layout batches on one GPU; put remaining layouts in RAM."""
+        """Balance complete layouts across GPUs; put overflow layouts in RAM."""
         if len(set(devices)) != len(devices) or not devices or 0 in devices:
             raise ValueError("feature GPUs must be distinct from training GPU0")
         budget = int(21.5 * 2**30)
@@ -82,19 +82,24 @@ class CachedPriorDataset(PriorDataset):
         groups = {}
         for row in self.rows:
             groups.setdefault(row["seed"], []).append(row)
-        placements, ram_bytes = [], 0
-        for rows in groups.values():
+        group_sizes = []
+        for rows in tqdm(groups.values(), desc="plan ViT GPU cache", file=sys.stdout, mininterval=5):
             sizes = [sum(shard(self.videos[row["path"]])[key].numel() *
                          shard(self.videos[row["path"]])[key].element_size()
                          for key in ("overview", "wrist")) for row in rows]
             size = sum(sizes)
-            device = next((device for device in devices if used[device] + size <= budget), None)
+            group_sizes.append((size, rows))
+        placements, ram_bytes = [], 0
+        for size, rows in sorted(group_sizes, key=lambda item: item[0], reverse=True):
+            eligible = [device for device in devices if used[device] + size <= budget]
+            device = min(eligible, key=used.get, default=None)
             if device is None:
                 ram_bytes += sum(self.videos[row["path"]].stat().st_size for row in rows)
             else:
                 used[device] += size
             placements.append((rows, device))
         shard.cache_clear()
+        print(json.dumps(dict(event="feature_cache_plan", gpu_bytes=used, ram_bytes=ram_bytes)), flush=True)
         if ram_bytes > 24 * 2**30 or shutil.disk_usage("/dev/shm").free < ram_bytes + 4 * 2**30:
             raise MemoryError("remaining feature layouts need at most24GiB RAM plus4GiB IPC headroom")
         self.ram_directory = Path(tempfile.mkdtemp(prefix="oatflow_prior_gpu_", dir="/dev/shm"))
@@ -113,7 +118,7 @@ class CachedPriorDataset(PriorDataset):
         return dict(gpu_bytes={str(device): size for device, size in used.items()},
                     ram_bytes=ram_bytes, ram_directory=str(self.ram_directory),
                     network_feature_reads_during_training=False,
-                    batching="complete layouts on one device; native DataLoader with zero workers")
+                    batching="layouts balanced by bytes across GPUs; native DataLoader with zero workers")
 
     def release_device_cache(self):
         self.gpu_shards.clear()

@@ -5,7 +5,8 @@ The first 20 valid action frames use stride 1; later `approach`, `engage`, `lift
 Close/grasp remains stride 1. H50 targets always contain
 consecutive 25 Hz actions; sampling changes only chunk starts. Feature storage defaults
 to FP16. Use `--feature-cache-gpus 1 2` with `CUDA_VISIBLE_DEVICES=4,6,7` to train
-on physical GPU4 and cache complete layouts on GPU6/7 (up to 21.5 GiB each).
+on physical GPU4 and cache complete layouts on GPU6/7, balanced by token bytes
+(up to 21.5 GiB each). Larger layouts are placed first on the GPU with less cache.
 Remaining layouts are staged in at most 24 GiB RAM before training, so feature
 reads during training do not access NFS. This mode uses native DataLoader with
 zero workers because its feature tensors already live on GPUs. Persisted cache
