@@ -1,8 +1,8 @@
 # Vision manipulation prior
 
 For pick phase sampling, pass `--sampling phase` to both caching and training.
-The first 20 valid action frames use stride 1; later `approach` and `engage` frames use stride 5.
-Close/grasp, lift and hold remain stride 1. H50 targets always contain
+The first 20 valid action frames use stride 1; later `approach`, `engage`, `lift` and `hold` frames use stride 5.
+Close/grasp remains stride 1. H50 targets always contain
 consecutive 25 Hz actions; sampling changes only chunk starts. Feature storage defaults
 to FP16. Use `--feature-cache-gpus 1 2` with `CUDA_VISIBLE_DEVICES=4,6,7` to train
 on physical GPU4 and cache complete layouts on GPU6/7 (up to 21.5 GiB each).

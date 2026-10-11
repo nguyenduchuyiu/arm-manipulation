@@ -38,9 +38,9 @@ def episode_arrays(path, horizon=25, sampling="dense"):
 
 
 def phase_starts(starts, phases):
-    """Keep the first 20 valid frames and close/lift/hold densely."""
+    """Keep the first 20 valid frames and gripper closing densely."""
     offset = np.arange(len(starts))
-    sparse = np.array([str(phase).rsplit("_", 1)[-1] in ("approach", "engage") for phase in phases[starts]])
+    sparse = np.array([str(phase).rsplit("_", 1)[-1] in ("approach", "engage", "lift", "hold") for phase in phases[starts]])
     return starts[(offset < 20) | ~sparse | ((offset - 20) % 5 == 0)]
 
 
@@ -110,7 +110,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--horizon", type=int, default=25, choices=(25, 50))
     parser.add_argument("--sampling", choices=("dense", "phase"), default="dense",
-                        help="phase: first 20 valid frames and close/lift/hold stride1; remaining approach/engage stride5")
+                        help="phase: first 20 valid frames and close stride1; remaining approach/engage/lift/hold stride5")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--min-lr", type=float, default=3e-6)
     parser.add_argument("--warmup-steps", type=int, default=500)
@@ -254,7 +254,7 @@ def main():
               "action_input_dim": model.head.action_dim, "action_output_dim": model.head.action_dim,
               "action_padding": False,
               "action_file": action_file, "horizon": args.horizon,
-              "stride": 1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage=5, close_lift_hold=1),
+              "stride": 1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage=5, close=1, lift=5, hold=5),
               "flow_steps": 10 if args.action_head == 'fm' else 0,
               "context_activation_checkpointing": args.action_head == 'fm',
               "demos": len(rows), "chunks_per_epoch": len(samples),
