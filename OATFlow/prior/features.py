@@ -201,7 +201,7 @@ def main():
     args.output.mkdir(parents=True)
     ram_directory = Path(tempfile.mkdtemp(prefix="oatflow_prior_", dir="/dev/shm"))
     config = dict(data=str(args.data), sampling=args.sampling,
-                  stride=1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage_close_lift_hold=1),
+                  stride=1 if args.sampling == "dense" else dict(first_20=1, approach=5, engage=5, close_lift_hold=1),
                   vision_weights=str(args.vision_weights),
                   sources=sources(args.data, args.vision_weights), dtype=args.dtype,
                   precision="lossless encoder outputs" if args.dtype == "float32" else "rounded to float16 for storage; restored to float32 before adapters",
