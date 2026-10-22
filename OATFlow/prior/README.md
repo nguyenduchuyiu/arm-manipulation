@@ -2,6 +2,18 @@
 
 A frozen shared ViT-B/16 encodes the current overview and wrist images into 64 tokens per view. Task, target and proprio tokens pass through four context decoder blocks. Actions are six absolute joint setpoints: five arm joints and gripper. Native three-camera amodal localization is in `OATFlow/tracking`.
 
+For pick phase sampling, pass `--sampling phase` to both caching and training.
+The first 20 valid action frames use stride 1; later `approach`, `engage`, `lift` and `hold` frames use stride 5.
+Close/grasp remains stride 1. H50 targets always contain
+consecutive 25 Hz actions; sampling changes only chunk starts. Feature storage defaults
+to FP16. Use `--feature-cache-gpus 1 2` with `CUDA_VISIBLE_DEVICES=4,6,7` to train
+on physical GPU4 and cache complete layouts on GPU6/7, balanced by token bytes
+(up to 21.5 GiB each). Larger layouts are placed first on the GPU with less cache.
+Remaining layouts are staged in at most 24 GiB RAM before training, so feature
+reads during training do not access NFS. This mode uses native DataLoader with
+zero workers because its feature tensors already live on GPUs. Persisted cache
+shards remain available for restarting; temporary RAM staging is released at exit.
+
 Every valid expert frame starts a chunk (stride 1). Labels and observed proprio anchors are read directly from `supervision.npz` and `observation.npz`. Context and terminal observations are excluded from action supervision; short terminal chunks repeat the last command and mask padded steps. H25 and H50 are supported. No chunk export is needed.
 
 Collect cover-removal data using [the dataset tools](../README.md), or simple cube-lift data using [pick](../pick/README.md). Only standard/train episodes enter training. Pick batches cover all 24 identity permutations; each chunk appears once per epoch.
@@ -23,7 +35,7 @@ Omit `--vision-cache` to encode images during training. Cache hashes bind featur
 
 FM initializes its action expert from the SmolVLA export, selecting six action input columns/output rows while retaining transformer weights. The 32-wide proprio projection is a conditioning feature, not extra actions. All FM action/noise/velocity tensors are `[B,H,6]`. FM uses ten Euler steps at evaluation by default.
 
-Use `--action-head act` for the same conditioning stack with LeRobot ACT modules: a 512-wide four-layer CVAE posterior, 32-dimensional latent and one decoder with H learned queries. Loss is masked normalized L1 plus 10 times KL. Inference uses zero latent and one decoder pass. The ACT head is initialized fresh; only its unchanged proprio projection uses the SmolVLA export. ACT trains without activation checkpointing, while FM retains it. Both heads use the same frozen vision cache.
+Use `--action-head act` and omit `--flow-weights` for the same conditioning stack with LeRobot ACT modules: a 512-wide four-layer CVAE posterior, 32-dimensional latent and one decoder with H learned queries. Loss is masked normalized L1 plus 10 times KL. Inference uses zero latent and one decoder pass. ACT and its entire conditioning stack, including the proprio projection, initialize from scratch; only the frozen vision encoder loads ImageNet weights. ACT trains without activation checkpointing, while FM retains it. Both heads use the same frozen vision cache.
 
 For experiments that finetune the backbone, construct `PriorPolicy(..., train_vision=True)` and feed RGB through `encode_views` before the action head. This enables encoder gradients and follows the model's train/eval mode. Recompute features at current weights; the frozen ViT cache cannot be used. The training CLI above retains frozen vision.
 

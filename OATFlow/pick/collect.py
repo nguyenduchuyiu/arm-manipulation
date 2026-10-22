@@ -80,25 +80,27 @@ def collect_group(root, group, split, base_seed):
                 rejections.append(dict(seed=seed, error=str(ex)))
                 continue
             try:
-                for permutation in range(24):
+                queries = [(p, target) for p in range(24) for target in TARGETS]
+                for permutation, target in tqdm(queries, desc=f"layout {group} feasibility #{attempt + 1}",
+                                                mininterval=15, file=sys.stdout, leave=False):
                     current = permutation_spec(spec, permutation)
-                    for target in TARGETS:
-                        setup(env, current, permutation)
-                        execute(env, target, lambda _phase: None)
+                    setup(env, current, permutation)
+                    execute(env, target, lambda _phase: None)
             except (GraspFailure, IKFailure, ValueError) as ex:
                 rejections.append(dict(seed=seed, error=str(ex)))
                 continue
             directory = root / f"g{group:03d}"
             rows = []
             try:
-                for permutation in range(24):
-                    for target_id, target in enumerate(TARGETS):
-                        # Within each permutation, all queries share exactly
-                        # the same initial physical state.
-                        row = write_episode(env, directory / f"p{permutation:02d}_t{target_id}",
-                                            spec, permutation, target, split)
-                        row["path"] = str(Path(directory.name) / row["path"])
-                        rows.append(row)
+                for permutation, target in tqdm(queries, desc=f"layout {group} record",
+                                                mininterval=15, file=sys.stdout, leave=False):
+                    target_id = TARGETS.index(target)
+                    # Within each permutation, all queries share exactly
+                    # the same initial physical state.
+                    row = write_episode(env, directory / f"p{permutation:02d}_t{target_id}",
+                                        spec, permutation, target, split)
+                    row["path"] = str(Path(directory.name) / row["path"])
+                    rows.append(row)
                 return rows, spec, rejections
             except (GraspFailure, IKFailure) as ex:
                 rejections.append(dict(seed=seed, error=str(ex), stage="full collection"))
