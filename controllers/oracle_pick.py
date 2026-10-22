@@ -63,7 +63,12 @@ def pick(
         return clone.xpos[gripper_id].copy() + rotation @ TCP_LOCAL, rotation
 
     def ik(point: np.ndarray, initial: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        result = least_squares(lambda q: 100 * (fk(q)[0] - point), initial[:3],
+        seed = initial[:3].copy()
+        # A settled home contains ~1e-13 angles; TRF otherwise starts with a
+        # vanishing trust radius. Exact zero selects SciPy's unit initial radius.
+        if np.linalg.norm(seed) < 1e-8:
+            seed[:] = 0.
+        result = least_squares(lambda q: 100 * (fk(q)[0] - point), seed,
                                bounds=(low[:3], high[:3]), max_nfev=400)
         tcp, rotation = fk(result.x)
         if np.linalg.norm(tcp - point) > 0.008:

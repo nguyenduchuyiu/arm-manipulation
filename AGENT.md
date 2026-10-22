@@ -6,6 +6,7 @@ uv env named ".venv"
 ## Files and directoy management
 
 * Delete temporary test, preparation, and execution code after use unless the user asks to keep it.
+* Remove finished preflight artifact folders, including their checkpoints and feature caches, after recording essential verification results in research notes.
 
 * Keep the repository root focused on the overall arm manipulation project and shared assets, controllers, and environments.
 * Put task-specific code, scenes, data tools, and docs in a top-level folder for that task (for example, `memory_occlusion/`), organized into subfolders by role.
@@ -133,7 +134,7 @@ After making changes, report:
 * Keep related tests under the experiment as `test_k10`, `test_k25`, etc.; use a short numeric suffix for repetitions and never overwrite earlier results. Keep run, log, and tmux names short and consistent.
 * Every experiment output folder, including a standalone test folder, must contain a short `README.md`: experiment purpose/change, actual training configuration (data, source weights, frozen/trainable modules, epochs, batch, learning rate, action representation), and actual test configuration (checkpoint/step, scenes, H/K, flow steps, noise seed, frame budget). Record status/results and link exact configuration files. Mark tests as planned, incomplete, or not run when applicable.
 * Prepare this README locally before launching a run, copy it beside the server artifacts once the trainer has created its fresh output directory, and update it after completion or interruption. Do not pre-create trainer output directories: current trainers reject existing outputs. Include the README when copying results locally. A small README beside server artifacts is required by the user; canonical research documentation remains local. Use `docs/research/EXPERIMENT_TEMPLATE.md` as a starting point.
-* Keep existing artifact paths intact when adding descriptions. Local bash scripts need not change; document launch commands in `OATFlow/policy/README.md` and adjust bash on the server when needed.
+* Keep existing artifact paths intact when adding descriptions. Local bash scripts need not change;
 
 ## Long running rule
 Dont read all logs but save it to a log file and grep if needed.
@@ -142,40 +143,5 @@ Use `tqdm` for every long-running code path so progress is visible in tmux and s
 
 Keep the explanation concise.
 
-## Server usage rules
-
-Use `vishc-server-1` only for workloads that need its compute or Linux/CUDA environment. Keep code authoring, documentation, lightweight inspection, data analysis, and small smoke tests on the local machine whenever possible.
-
-Update code on local machine and then git push to remote, and then git pull on server to save edit time.
-
-Use one workspace per server: `/home/hoang.pm/duchuy/arm-manipulation` on `vishc-server-1`, and `/mnt/disk1/backup_user/25thanh.tk/arm-manipulation` on `vishc-server-2`. Do not create additional experiment worktrees. Name project branches, runs, and artifacts after `memory_occlusion`. Keep names of reference models only in source attribution and checkpoint provenance.
-
-### Resources
-
-* Default to one GPU. The user authorized up to three GPUs for the additional `vishc-server-2` run. Set `CUDA_VISIBLE_DEVICES` explicitly and use only GPUs with enough free memory.
-* Do not use more than 8 CPU cores or 64 GB RAM.
-* Run long jobs inside the `huy` tmux session so they survive SSH disconnects.
-* Before starting a long run, check the selected GPU, available disk space, output paths, and whether another copy of the job is already running.
-* Save stdout and stderr to a log file and show the main log live in tmux. Inspect progress with targeted `tail`, `grep`, or process/GPU checks instead of repeatedly reading the full log.
-
-### Storage
-
-* Keep the server repository at `/home/hoang.pm/duchuy/arm-manipulation` limited to source code and small runtime metadata.
-* Store datasets, checkpoints, logs, videos, export shards, and other heavy artifacts under `/mnt/disk1/backup_user/hoang.pm/huy/arm-manipiulation`.
-* On `vishc-server-2`, read the existing dataset/checkpoints from that shared mount; write new artifacts under `/mnt/disk1/backup_user/25thanh.tk/memory_occlusion`. Its SSH account is `25thanh.tk`, so do not write to the other account's artifact directories.
-* Use these standard subdirectories: `datasets/`, `checkpoints/`, `logs/`, and `scratch/`.
-* Treat the 100 GB `/home` account limit as hard. Check both `du -xsh /home/hoang.pm` and `df -h /home /mnt/disk1` before a run that may create substantial output.
-* Never place a large dataset, checkpoint, cache, raw video collection, or temporary export physically under `/home`.
-* Use fresh, experiment-specific output directories and fail if they already exist. Do not silently overwrite a previous run.
-* Delete temporary shards, abandoned exports, debug dumps, and obsolete intermediate checkpoints after the final artifact has been verified. Retain the final checkpoint and any checkpoint explicitly needed for comparison or recovery.
-* Do not delete or modify another user's directories, shared caches, environments, or processes.
-
 ### Local and server responsibilities
-
-* Develop and review code locally first. Run a syntax check or small smoke test locally before starting an expensive server job.
-* Treat the local repository as the source of truth. Prefer committing/pushing locally and pulling on the server; avoid editing the same source file independently in both places.
-* Send only the code and configuration required to run the experiment. Do not use the server as a documentation archive or general workspace.
-* Run GPU training, large-scale simulation collection, full dataset export, and heavy closed-loop evaluation on the server.
 * Keep research documentation only in local `docs/research/`. The canonical report is `docs/research/REPORT.md`.
-* After each experiment, copy important small outputs back to the local experiment folder: configuration, audit JSON, `summary.json`, `results.jsonl`, selected plots/images/videos, and the useful final log excerpt.
-* For a large final checkpoint, keep it on `/mnt`, record its exact path and checksum in the local report, and copy it to the local machine only when it is needed there.

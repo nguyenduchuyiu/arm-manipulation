@@ -1,0 +1,8 @@
+# Install after the project's torch2.7.0+cu128 environment.
+# mmcv needs a CUDA extension built for torch2.7 / RTX3090 (sm86).
+# MMCV_WITH_OPS=1 FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST=8.6 MAX_JOBS=16
+# uv pip install --python .venv/bin/python --no-build-isolation mmcv==2.2.0
+transformers==4.56.1
+timm==1.0.12
+accelerate==1.10.0
+mmcv==2.2.0

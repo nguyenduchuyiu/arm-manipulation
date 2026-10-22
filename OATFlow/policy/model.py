@@ -10,15 +10,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OAT-Flow policy: tracking features, wrist vision, context decoder and flow matching.
-
-Action input/output projections use six coordinates; older padded heads require retraining.
-Upstream TCOW itself lives in third_party/tcow; tracking.py loads that dependency.
-"""
+"""Shared context decoder and six-coordinate FM expert for prior/reach policies."""
 from __future__ import annotations
 
-from copy import deepcopy
-import hashlib
 import math
 from pathlib import Path
 
@@ -150,9 +144,10 @@ class ContextTransformerBlock(nn.Module):
 class ContextDecoder(nn.Module):
     """Four transformer blocks contextualizing observation tokens."""
 
-    def __init__(self, tokens=365):
+    def __init__(self, tokens=365, gradient_checkpointing=True):
         super().__init__()
         self.tokens = tokens
+        self.gradient_checkpointing = gradient_checkpointing
         self.layers = nn.ModuleList([ContextTransformerBlock() for _ in range(4)])
 
     def forward(self, context, projections=None):
@@ -164,130 +159,9 @@ class ContextDecoder(nn.Module):
         for layer in self.layers:
             # ACT fits in memory; recomputation is only needed by the FM path.
             context = (checkpoint(layer, context, positions, use_reentrant=False)
-                       if projections is not None and self.training and torch.is_grad_enabled()
+                       if self.gradient_checkpointing and projections is not None and self.training and torch.is_grad_enabled()
                        else layer(context, positions))
         return context, [] if projections is None else [projection(context) for projection in projections]
-
-
-def preprocess_wrist_image(rgb, device):
-    if rgb.shape != (320, 320, 3) or rgb.dtype.name != "uint8":
-        raise ValueError("expected full, uncropped wrist RGB uint8 [320,320,3]")
-    image = torch.from_numpy(rgb.copy()).permute(2, 0, 1)[None].to(device)
-    return (image.float() / 255 - .45) / .225
-
-
-def vision_state_sha256(state):
-    digest = hashlib.sha256()
-    for name, value in sorted(state.items()):
-        digest.update(name.encode())
-        digest.update(str((tuple(value.shape), value.dtype)).encode())
-        digest.update(value.detach().cpu().contiguous().numpy().tobytes())
-    return digest.hexdigest()
-
-
-class VisionTransformerBlock(nn.Module):
-    def __init__(self, source):
-        super().__init__()
-        self.norm1 = deepcopy(source.norm1)
-        self.attn = deepcopy(source.attn)
-        self.norm2 = deepcopy(source.norm2)
-        self.mlp = deepcopy(source.mlp)
-
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
-        return x + self.mlp(self.norm2(x))
-
-
-class WristVisionEncoder(nn.Module):
-    """ViT-B/16 wrist features with optional ImageNet initialization."""
-
-    tokens = 400
-
-    def __init__(self, backbone):
-        super().__init__()
-        self.imagenet_normalization = False
-        self.frozen = False
-        source = backbone.timesformer.model
-        patch = source.patch_embed.proj
-        if patch.out_channels != 768 or patch.kernel_size != (16, 16):
-            raise ValueError("wrist encoder requires TCOW ViT-B/16 spatial weights")
-        self.patch = nn.Conv2d(3, 768, 16, 16, bias=patch.bias is not None)
-        with torch.no_grad():
-            self.patch.weight.copy_(patch.weight[:, :3])
-            if patch.bias is not None:
-                self.patch.bias.copy_(patch.bias)
-        self.cls_token = nn.Parameter(source.cls_token.detach().clone())
-        height, width = source.patch_embed.img_size
-        grid = (height // 16, width // 16)
-        if source.pos_embed.shape != (1, grid[0] * grid[1] + 1, 768):
-            raise ValueError("TCOW positional embeddings disagree with its image grid")
-        positions = source.pos_embed[:, 1:].detach().transpose(1, 2).reshape(1, 768, *grid)
-        positions = F.interpolate(positions, size=(20, 20), mode="nearest").flatten(2).transpose(1, 2)
-        self.pos_embed = nn.Parameter(torch.cat((source.pos_embed[:, :1].detach(), positions), dim=1).clone())
-        self.blocks = nn.ModuleList([VisionTransformerBlock(block) for block in source.blocks])
-        self.norm = deepcopy(source.norm)
-
-    def load_vit_base(self, path):
-        """Load torchvision ViT_B_16_Weights.IMAGENET1K_V1, without its classifier."""
-        report = self.load_vit_state(torch.load(path, map_location="cpu", weights_only=True, mmap=True))
-        return {**report, "path": str(path)}
-
-    def load_vit_state(self, source):
-        names = {"patch.weight": "conv_proj.weight", "patch.bias": "conv_proj.bias",
-                 "cls_token": "class_token", "pos_embed": "encoder.pos_embedding",
-                 "norm.weight": "encoder.ln.weight", "norm.bias": "encoder.ln.bias"}
-        if len(self.blocks) != 12 or source["encoder.pos_embedding"].shape not in ((1, 197, 768), (1, 401, 768)):
-            raise ValueError("expected torchvision ViT-B/16 at 224px or 320px")
-        for i in range(12):
-            for target, original in {
-                "norm1": "ln_1", "norm2": "ln_2", "attn.qkv": "self_attention.in_proj",
-                "attn.proj": "self_attention.out_proj", "mlp.fc1": "mlp.linear_1", "mlp.fc2": "mlp.linear_2",
-            }.items():
-                for suffix in ("weight", "bias"):
-                    separator = "_" if original.endswith("in_proj") else "."
-                    name = f"encoder.layers.encoder_layer_{i}.{original}{separator}{suffix}"
-                    if original in ("mlp.linear_1", "mlp.linear_2"):
-                        current = name.replace("mlp.linear_1", "mlp.0").replace("mlp.linear_2", "mlp.3")
-                        name = current if current in source else name
-                    names[f"blocks.{i}.{target}.{suffix}"] = name
-        if set(source) - {"heads.head.weight", "heads.head.bias"} != set(names.values()):
-            raise ValueError("unexpected torchvision ViT-B/16 weight keys")
-        state = {target: source[original] for target, original in names.items()}
-        if state["pos_embed"].shape[1] == 197:
-            positions = state["pos_embed"][:, 1:].transpose(1, 2).reshape(1, 768, 14, 14)
-            positions = F.interpolate(positions, size=(20, 20), mode="bicubic", align_corners=True)
-            state["pos_embed"] = torch.cat((state["pos_embed"][:, :1], positions.flatten(2).transpose(1, 2)), dim=1)
-        self.load_state_dict(state, strict=True)
-        self.imagenet_normalization = True
-        return {"source": "torchvision.ViT_B_16_Weights.IMAGENET1K_V1",
-                "loaded_tensors": len(state), "excluded_tensors": ["heads.head.weight", "heads.head.bias"],
-                "encoder_state_sha256": vision_state_sha256(self.state_dict()),
-                "position_grid": "20x20 preserved" if source["encoder.pos_embedding"].shape[1] == 401 else "14x14 -> 20x20, bicubic, align_corners=True",
-                "rgb_mean": [.485, .456, .406], "rgb_std": [.229, .224, .225]}
-
-    def freeze(self):
-        self.requires_grad_(False)
-        self.frozen = True
-        self.eval()
-
-    def train(self, mode=True):
-        return super().train(mode and not self.frozen)
-
-    def forward(self, image):
-        if image.shape[1:] != (3, 320, 320):
-            raise ValueError("wrist encoder requires current RGB [B,3,320,320]")
-        if self.imagenet_normalization:
-            # Dataset/rollout tensors use TCOW normalization; convert before pretrained ViT.
-            mean = image.new_tensor([.485, .456, .406])[None, :, None, None]
-            std = image.new_tensor([.229, .224, .225])[None, :, None, None]
-            image = (image * .225 + .45 - mean) / std
-        patches = self.patch(image).flatten(2).transpose(1, 2)
-        x = torch.cat((self.cls_token.expand(len(image), -1, -1), patches), dim=1)
-        x = x + self.pos_embed
-        for block in self.blocks:
-            x = checkpoint(block, x, use_reentrant=False) if self.training and torch.is_grad_enabled() else block(x)
-        # Keep all 20x20 locations. CLS participates internally but is not sent to FM.
-        return self.norm(x)[:, 1:]
 
 
 class FlowMatchingHead(nn.Module):
@@ -298,26 +172,14 @@ class FlowMatchingHead(nn.Module):
     action_representation = "absolute_joint"
     action_dim = 6
 
-    def __init__(self, wrist_backbone=None, contextualize=False, horizon=25):
+    def __init__(self, horizon=25):
         super().__init__()
         if horizon < 1:
             raise ValueError("positive action horizon required")
         self.horizon = horizon
         self.visual = nn.Sequential(nn.LayerNorm(768), nn.Linear(768, 256),
                                     nn.SiLU(), nn.Linear(256, 960))
-        self.wrist_enabled = wrist_backbone is not None
-        if contextualize and not self.wrist_enabled:
-            raise ValueError("contextualized policy requires wrist vision")
-        self.contextualize = contextualize
-        self.wrist_tokens = 64 if contextualize else (400 if self.wrist_enabled else 0)
-        self.context_tokens = 301 + self.wrist_tokens
-        if contextualize:
-            self.context_decoder = ContextDecoder()
-        if self.wrist_enabled:
-            self.wrist_encoder = WristVisionEncoder(wrist_backbone)
-            self.wrist_projection = deepcopy(self.visual)
-            self.overview_view_embedding = nn.Parameter(torch.randn(1, 1, 960) * .02)
-            self.wrist_view_embedding = nn.Parameter(torch.randn(1, 1, 960) * .02)
+        self.context_tokens = 301
         self.proprio = nn.Sequential(nn.Linear(6, 128), nn.SiLU(), nn.Linear(128, 256),
                                      nn.SiLU(), nn.Linear(256, 32))
         # Start the new proprio MLP as a residual on padded, normalized state.
@@ -344,7 +206,7 @@ class FlowMatchingHead(nn.Module):
         from safetensors.torch import load_file
         state = load_file(str(path))
         expected = {key for key in self.state_dict()
-                    if not key.startswith(("visual.", "proprio.", "wrist_", "overview_", "context_decoder.", "state_mean", "state_std",
+                    if not key.startswith(("visual.", "proprio.", "state_mean", "state_std",
                                            "action_mean", "action_std"))}
         if state.keys() != expected:
             raise ValueError(f"action expert export keys differ: missing={sorted(expected - state.keys())}, "
@@ -367,75 +229,14 @@ class FlowMatchingHead(nn.Module):
                 "action_dim": self.action_dim, "pretrained_action_dim": 32,
                 "action_projection_initialization": "first six input columns and output rows; no action padding",
                 "context_shape": [self.context_tokens, 960],
-                "wrist_tokens": self.wrist_tokens, "contextualize": self.contextualize,
-                "wrist_initialization": "TCOW spatial weights" if self.wrist_enabled else None,
                 "interaction": "bidirectional SA + dense CA"}
 
-    def load_prior(self, path):
-        source = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
-        if source["architecture"] != "oracle_task_target_fm" or source["config"]["action_representation"] != "absolute_joint":
-            raise ValueError("absolute joint vision/FM prior required")
-        if not self.wrist_enabled or not self.contextualize:
-            raise ValueError("prior initialization requires wrist vision and context decoder")
-        state = source["model"]
-        if state["flow.action_out_proj.weight"].shape != (self.action_dim, 720):
-            raise ValueError("six-coordinate prior head required; retrain the older padded prior")
-        common = {key.removeprefix("flow."): value for key, value in state.items() if key.startswith("flow.")}
-        expected = {key for key in self.state_dict() if not key.startswith(("visual.", "wrist_", "overview_", "context_decoder."))}
-        if set(common) != expected:
-            raise ValueError("prior FM parameter keys differ from main FM")
-        self.load_state_dict(common, strict=False)
-        visual = {key.removeprefix("visual_projection."): value for key, value in state.items() if key.startswith("visual_projection.")}
-        self.visual.load_state_dict(visual, strict=True)
-        self.wrist_projection.load_state_dict(visual, strict=True)
-        decoder = {key.removeprefix("context_decoder."): value for key, value in state.items() if key.startswith("context_decoder.")}
-        self.context_decoder.load_state_dict(decoder, strict=True)
-        vision = {key.removeprefix("vision_encoder."): value for key, value in state.items() if key.startswith("vision_encoder.")}
-        vision_report = self.wrist_encoder.load_vit_state(vision)
-        with torch.no_grad():
-            self.overview_view_embedding.copy_(state["view_embedding"][0:1])
-            self.wrist_view_embedding.copy_(state["view_embedding"][1:2])
-        statistics = dict(source["config"]["statistics"])
-        self.set_statistics(statistics)
-        return dict(source=str(path), source_step=source["step"], source_epoch=source["epoch"],
-                    loaded_fm_tensors=len(common), loaded_visual_tensors=len(visual),
-                    loaded_context_tensors=len(decoder), wrist_initialization=vision_report,
-                    context_shape=[self.context_tokens, 960], normalization=statistics,
-                    excluded=["task_embedding", "target_embedding", "overview vision backbone"],
-                    overview_initialization="TCOW pretrained backbone; prior visual adapter")
-
-    def encode_wrist(self, wrist):
-        features = self.wrist_encoder(wrist)
-        if self.contextualize:
-            grid = features.transpose(1, 2).reshape(len(wrist), 768, 20, 20)
-            features = F.adaptive_avg_pool2d(grid, (8, 8)).flatten(2).transpose(1, 2)
-        return features
-
-    def conditioning(self, latent, proprio, wrist=None, wrist_features=None):
+    def conditioning(self, latent, proprio):
         if latent.shape[1:] != (300, 768) or proprio.shape[1:] != (6,):
-            raise ValueError("expected TCOW [B,300,768] and proprio [B,6]")
+            raise ValueError("expected visual tokens [B,300,768] and proprio [B,6]")
         state = (proprio - self.state_mean) / self.state_std
         padded = F.pad(state, (0, 26)) + self.proprio(state)
-        visual = [self.visual(latent)]
-        if self.wrist_enabled:
-            visual[0] = visual[0] + self.overview_view_embedding
-        if self.wrist_enabled:
-            if wrist is None and wrist_features is None:
-                raise ValueError("wrist-enabled policy requires current wrist RGB")
-            if wrist_features is None:
-                if len(wrist) != len(latent):
-                    raise ValueError("wrist and TCOW batch sizes differ")
-                wrist_features = self.encode_wrist(wrist)
-            elif wrist is not None:
-                raise ValueError("supply either wrist RGB or cached features")
-            if wrist_features.shape != (len(latent), self.wrist_tokens, 768):
-                raise ValueError("cached wrist feature shape differs from policy")
-            visual.append(self.wrist_projection(wrist_features) + self.wrist_view_embedding)
-        elif wrist is not None or wrist_features is not None:
-            raise ValueError("checkpoint has no wrist encoder")
-        context = torch.cat((*visual, self.state_proj(padded)[:, None]), dim=1)
-        if self.contextualize:
-            return self.context_decoder(context, self.context_projections)
+        context = torch.cat((self.visual(latent), self.state_proj(padded)[:, None]), dim=1)
         return context, [projection(context) for projection in self.context_projections]
 
     def set_statistics(self, statistics):
@@ -468,8 +269,8 @@ class FlowMatchingHead(nn.Module):
             x = self.layers[2 * index + 1](x, positions, kv)
         return -self.action_out_proj(self.norm(x))
 
-    def forward(self, latent, proprio, noisy_action, time, wrist=None, wrist_features=None):
-        context, kv = self.conditioning(latent, proprio, wrist, wrist_features)
+    def forward(self, latent, proprio, noisy_action, time):
+        context, kv = self.conditioning(latent, proprio)
         return self.velocity(noisy_action, time, kv), context
 
     def sample_noise(self, batch, device, generator=None):
@@ -485,9 +286,8 @@ class FlowMatchingHead(nn.Module):
         noisy = (1 - time[:, None, None]) * noise + time[:, None, None] * normalized
         return noisy, time, normalized - noise
 
-    def sample(self, latent, proprio, noise, steps=10, wrist=None):
-        _, kv = (self.conditioning(latent, proprio) if wrist is None else
-                 self.conditioning(latent, proprio, wrist))
+    def sample(self, latent, proprio, noise, steps=10):
+        _, kv = self.conditioning(latent, proprio)
         return self.sample_actions(noise, kv, steps)
 
     @torch.no_grad()
@@ -503,100 +303,3 @@ class FlowMatchingHead(nn.Module):
             velocity = self.velocity(estimate, time, context_kv).float()
             estimate += velocity / steps
         return estimate * self.action_std + self.action_mean
-
-
-class OATFlowPolicy(nn.Module):
-    """Target-conditioned TCOW tracking and wrist/state-conditioned flow actions."""
-
-    def __init__(self, seeker: nn.Module, flow: nn.Module):
-        super().__init__()
-        self.tcow = seeker
-        self.flow = flow
-        self._latent = None
-        self.tcow.seeker.tracker_backbone.register_forward_hook(self._capture_backbone)
-
-    def _capture_backbone(self, _module, _inputs, output):
-        dense = output[0]
-        self._latent = dense[:, :, -1].flatten(2).transpose(1, 2)
-
-    def forward(self, rgbd, query, proprio=None, noisy_action=None, time=None, wrist=None):
-        self._latent = None
-        mask_logits, _flags = self.tcow(rgbd, query)
-        if self._latent is None:
-            raise RuntimeError("TCOW backbone hook did not capture dense features")
-        latent = self._latent
-        if noisy_action is None:
-            return mask_logits, None, latent, None
-        velocity, context = (self.flow(latent, proprio, noisy_action, time) if wrist is None else
-                             self.flow(latent, proprio, noisy_action, time, wrist=wrist))
-        return mask_logits, velocity, latent, context
-
-
-def restore_policy(seeker, checkpoint):
-    if (checkpoint["flow_type"] != "dense_action_expert" or checkpoint["action_representation"] != "absolute_joint"
-            or not checkpoint["wrist_camera"] or not checkpoint["contextualize"]):
-        raise ValueError("absolute joint TCOW/wrist/context-decoder checkpoint required")
-    set_tracker_input(seeker)
-    flow = FlowMatchingHead(wrist_backbone=seeker.seeker.tracker_backbone, contextualize=True)
-    if checkpoint.get("wrist_camera", False):
-        flow.wrist_encoder.imagenet_normalization = checkpoint.get("wrist_imagenet_normalization", False)
-        if checkpoint.get("wrist_encoder_frozen", False):
-            flow.wrist_encoder.freeze()
-    model = OATFlowPolicy(seeker, flow)
-    model.load_state_dict(checkpoint["model"], strict=True)
-    if checkpoint.get("tcow_frozen", False):
-        model.tcow.requires_grad_(False)
-        model.tcow.eval()
-    return model
-
-
-def load_training_tracker(seeker, source):
-    if "model" in source:
-        state = {key.removeprefix("tcow."): value for key, value in source["model"].items()
-                 if key.startswith("tcow.")}
-        step = source["step"]
-    else:
-        state, step = dict(source["net_seeker"]), source.get("source_step", 0)
-    key = "seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight"
-    patch = state[key]
-    target_channels = seeker.seeker.tracker_backbone.timesformer.model.patch_embed.proj.in_channels
-    if target_channels != 4 or patch.shape[1] not in (4, 5):
-        raise ValueError("new training requires RGB+query TCOW (4 patch channels)")
-    if patch.shape[1] == 5:
-        # RGB and query stay bit-identical; the learned depth kernel is discarded.
-        state[key] = patch[:, [0, 1, 2, 4]].contiguous()
-    seeker.load_state_dict(state, strict=True)
-    return step
-
-
-def checkpoint_uses_depth(checkpoint):
-    key = "seeker.tracker_backbone.timesformer.model.patch_embed.proj.weight"
-    state = checkpoint.get("net_seeker")
-    patch = state[key] if state is not None else checkpoint["model"]["tcow." + key]
-    channels = patch.shape[1]
-    if channels not in (4, 5):
-        raise ValueError("expected RGB+query or historical RGB-D+query checkpoint")
-    visual_input = "rgbd" if channels == 5 else "rgb"
-    if checkpoint.get("visual_input", visual_input) != visual_input:
-        raise ValueError("visual_input metadata disagrees with patch weights")
-    return channels == 5
-
-
-def set_tracker_input(seeker):
-    backbone = seeker.seeker.tracker_backbone
-    patch = backbone.timesformer.model.patch_embed
-    old = patch.proj
-    if old.in_channels not in (4, 5):
-        raise ValueError("expected four or five TCOW patch channels")
-    if old.in_channels == 5:
-        new = nn.Conv2d(4, old.out_channels, old.kernel_size, old.stride,
-                        old.padding, old.dilation, old.groups, old.bias is not None,
-                        device=old.weight.device, dtype=old.weight.dtype)
-        with torch.no_grad():
-            new.weight.copy_(old.weight[:, [0, 1, 2, 4]])
-            if old.bias is not None:
-                new.bias.copy_(old.bias)
-        patch.proj = new
-    seeker.seeker.input_channels = 4
-    backbone.Ci = 4
-    return seeker

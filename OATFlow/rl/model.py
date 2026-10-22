@@ -23,7 +23,7 @@ def load_prior(path, device="cuda"):
     saved = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
     if saved["architecture"] != "oracle_task_target_fm" or saved["config"]["action_representation"] != "absolute_joint":
         raise ValueError("six-action absolute-joint prior required")
-    policy = PriorPolicy().to(device).eval()
+    policy = PriorPolicy(horizon=saved["config"]["horizon"]).to(device).eval()
     policy.load_state_dict(saved["model"], strict=True)
     policy.requires_grad_(False)
     for name in VELOCITY_MODULES:
@@ -32,16 +32,17 @@ def load_prior(path, device="cuda"):
 
 
 class NoiseHead(nn.Module):
-    def __init__(self):
+    def __init__(self, horizon=25):
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(960 + 150 + 1, 128), nn.SiLU(), nn.Linear(128, 150))
+        self.horizon = horizon
+        self.net = nn.Sequential(nn.Linear(960 + horizon * 6 + 1, 128), nn.SiLU(), nn.Linear(128, horizon * 6))
         # Small initial transition noise in standardized action coordinates.
         nn.init.zeros_(self.net[-1].weight)
         nn.init.constant_(self.net[-1].bias, math.log((.02 - .005) / (.08 - .02)))
 
     def forward(self, context, noisy, time):
         value = torch.cat((context.float(), noisy.flatten(1), time[:, None]), 1)
-        return (.005 + .075 * self.net(value).sigmoid()).reshape(-1, 25, 6)
+        return (.005 + .075 * self.net(value).sigmoid()).reshape(-1, self.horizon, 6)
 
 
 class Critic(nn.Module):
@@ -81,7 +82,7 @@ def distribution(policy, head, pooled, kv, noisy, time):
 @torch.no_grad()
 def sample(policy, head, pooled, kv, generator):
     batch = len(pooled)
-    noisy = torch.randn((batch, 25, 6), device="cuda", generator=generator)
+    noisy = policy.flow.sample_noise(batch, "cuda", generator)
     chain, logprob = [noisy], torch.zeros(batch, device="cuda")
     for index in range(FLOW_STEPS):
         time = torch.full((batch,), index / FLOW_STEPS, device="cuda")
@@ -97,8 +98,9 @@ def sample(policy, head, pooled, kv, generator):
 
 def log_probability(policy, head, pooled, kv, chain):
     batch = len(chain)
-    noisy = chain[:, :-1].reshape(batch * FLOW_STEPS, 25, 6)
-    next_noisy = chain[:, 1:].reshape(batch * FLOW_STEPS, 25, 6)
+    horizon = policy.flow.horizon
+    noisy = chain[:, :-1].reshape(batch * FLOW_STEPS, horizon, 6)
+    next_noisy = chain[:, 1:].reshape(batch * FLOW_STEPS, horizon, 6)
     time = torch.arange(FLOW_STEPS, device="cuda", dtype=torch.float32).repeat(batch) / FLOW_STEPS
     expanded_kv = [(k.repeat_interleave(FLOW_STEPS, 0), v.repeat_interleave(FLOW_STEPS, 0)) for k, v in kv]
     dist = distribution(policy, head, pooled.repeat_interleave(FLOW_STEPS, 0), expanded_kv, noisy, time)

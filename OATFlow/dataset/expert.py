@@ -43,7 +43,7 @@ def setup_scene(env, task_id, seed):
     return rng, cover
 
 
-def execute(env, target, rng, record):
+def execute(env, target, rng, record, *, target_wrist=(-.8, 0.)):
     env.query(target)
     cover = env.assignment[target]
     env.choose_cover(cover)
@@ -82,7 +82,8 @@ def execute(env, target, rng, record):
             longest_held_run = max(longest_held_run, held_run)
 
         gain = pick(env.model, env.data, body, point, place_xy=destination,
-                    lift_height=.12, straight_lift=index == 0, on_step=callback)
+                    lift_height=.12, straight_lift=index == 0, on_step=callback,
+                    wrist=(-.8, 0.) if index == 0 else target_wrist)
         if gain < .04 or longest_held_run < 10:
             raise GraspFailure(f"{body}: lift gain {gain:.3f}, bilateral streak {longest_held_run} frames")
         lift_gains[body] = gain

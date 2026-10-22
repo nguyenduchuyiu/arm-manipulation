@@ -1,6 +1,6 @@
 # Vision manipulation prior
 
-A frozen shared ViT-B/16 encodes the current overview and wrist images into 64 tokens per view. Task, target and proprio tokens pass through four context decoder blocks. Actions are six absolute joint setpoints: five arm joints and gripper. TCOW is introduced separately in the main policy.
+A frozen shared ViT-B/16 encodes the current overview and wrist images into 64 tokens per view. Task, target and proprio tokens pass through four context decoder blocks. Actions are six absolute joint setpoints: five arm joints and gripper. Native three-camera amodal localization is in `OATFlow/tracking`.
 
 Every valid expert frame starts a chunk (stride 1). Labels and observed proprio anchors are read directly from `supervision.npz` and `observation.npz`. Context and terminal observations are excluded from action supervision; short terminal chunks repeat the last command and mask padded steps. H25 and H50 are supported. No chunk export is needed.
 
@@ -25,7 +25,11 @@ FM initializes its action expert from the SmolVLA export, selecting six action i
 
 Use `--action-head act` for the same conditioning stack with LeRobot ACT modules: a 512-wide four-layer CVAE posterior, 32-dimensional latent and one decoder with H learned queries. Loss is masked normalized L1 plus 10 times KL. Inference uses zero latent and one decoder pass. The ACT head is initialized fresh; only its unchanged proprio projection uses the SmolVLA export. ACT trains without activation checkpointing, while FM retains it. Both heads use the same frozen vision cache.
 
+For experiments that finetune the backbone, construct `PriorPolicy(..., train_vision=True)` and feed RGB through `encode_views` before the action head. This enables encoder gradients and follows the model's train/eval mode. Recompute features at current weights; the frozen ViT cache cannot be used. The training CLI above retains frozen vision.
+
 `--resume` restores model, optimizer, scheduler and noise RNG; `--epochs` counts additional epochs. Extending beyond the original schedule holds its LR floor. `--restart-scheduler` retains model/optimizer/RNG and starts a new warmup/cosine schedule. Resume requires stride-1 data, matching head/horizon, normalization, batch and seed; without a scheduler restart LR settings must also match.
+
+For constant-LR continuation, use `--resume CHECKPOINT --restart-scheduler --lr 1e-4 --min-lr 1e-4 --warmup-steps 0`. This keeps Adam moments and starts at 1e-4 on the first update.
 
 For cover-removal FM evaluation:
 

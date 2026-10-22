@@ -50,8 +50,8 @@ def stack_critic(packets):
 
 
 @torch.no_grad()
-def evaluate(policy, vector, output, iteration, count=48):
-    cases = [dict(seed=9000000 + task["task_id"] * 100 + order,
+def evaluate(policy, vector, output, iteration, count=48, cases=None):
+    cases = cases if cases is not None else [dict(seed=9000000 + task["task_id"] * 100 + order,
                   task_id=task["task_id"], target_id=TARGETS.index(target), slot_order=order)
              for task in TASKS for target in task["objects"] for order in range(2)][:count]
     results = []
@@ -59,25 +59,27 @@ def evaluate(policy, vector, output, iteration, count=48):
     for begin in tqdm(range(0, len(cases), len(vector.pipes)), desc=f"eval {iteration}", mininterval=5, file=sys.stdout):
         group = cases[begin:begin + len(vector.pipes)]
         for i, case in enumerate(group):
-            vector.send(i, "reset", case)
+            vector.send(i, "reset", {key: value for key, value in case.items() if key not in ("noise_seed", "reference")})
         packets = [vector.receive(i) for i in range(len(group))]
-        generators = [torch.Generator(device="cuda").manual_seed(0) for _ in group]
+        generators = [torch.Generator(device="cuda").manual_seed(case.get("noise_seed", 0)) for case in group]
         active = list(range(len(group)))
-        progress = tqdm(total=MAX_FRAMES // EXECUTE, desc=f"eval batch {begin // len(vector.pipes) + 1}",
+        progress = tqdm(total=(vector.max_frames + vector.execute - 1) // vector.execute, desc=f"eval batch {begin // len(vector.pipes) + 1}",
                         mininterval=5, leave=False, file=sys.stdout)
         while active:
             pooled, kv = encode(policy, [packets[i] for i in active])
             # A per-scene RNG makes the initial Gaussian sequence independent
             # of how quickly other vector environments finish.
-            noise = torch.cat([torch.randn((1, 25, 6), device="cuda", generator=generators[i]) for i in active])
-            actions = policy.flow.sample_actions(noise, kv, FLOW_STEPS).cpu().numpy()[:, :EXECUTE]
+            noise = torch.cat([policy.flow.sample_noise(1, "cuda", generators[i]) for i in active])
+            actions = policy.flow.sample_actions(noise, kv, FLOW_STEPS).cpu().numpy()[:, :vector.execute]
             for i, action in zip(active, actions):
                 vector.send(i, "step", action)
             remaining = []
             for i in active:
                 packets[i], transition = vector.receive(i)
                 if transition["terminated"] or transition["truncated"]:
-                    results.append(dict(**transition["episode"], slot_order=group[i]["slot_order"]))
+                    result = dict(**transition["episode"])
+                    result.update({key: group[i][key] for key in ("slot_order", "noise_seed", "reference") if key in group[i]})
+                    results.append(result)
                 else:
                     remaining.append(i)
             active = remaining
@@ -99,7 +101,7 @@ def collect(policy, head, critic, vector, packets, reset_next, generator, steps,
                                   "next_values", "rewards", "discounts", "trace_discounts", "terminated", "truncated")}
     completed, frame_count = [], 0
     kv_buffer = None
-    for step in tqdm(range(steps), desc="collect K5", mininterval=5, file=sys.stdout):
+    for step in tqdm(range(steps), desc=f"collect K{vector.execute}", mininterval=5, file=sys.stdout):
         pooled, kv = encode(policy, packets)
         action, chain, sample_lp = sample(policy, head, pooled, kv, generator)
         state = stack_critic(packets)
@@ -115,7 +117,7 @@ def collect(policy, head, critic, vector, packets, reset_next, generator, steps,
         stored["sample_logprob"].append(sample_lp.cpu())
         stored["critic"].append(state.cpu())
         stored["values"].append(critic(state).cpu())
-        for i, chunk in enumerate(action[:, :EXECUTE].cpu().numpy()):
+        for i, chunk in enumerate(action[:, :vector.execute].cpu().numpy()):
             vector.send(i, "step", chunk)
         transitions, next_packets = [], []
         for i in range(len(packets)):
@@ -259,6 +261,9 @@ def main():
     parser.add_argument("--eval-every", type=int, default=5)
     parser.add_argument("--eval-cases", type=int, default=48)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--data", type=Path, help="pick-only BC data: reset template and held-out manifest")
+    parser.add_argument("--execute-chunk", type=int, help="waypoints executed before replanning")
+    parser.add_argument("--max-frames", type=int, help="per-episode waypoint budget")
     args = parser.parse_args()
     initial_lr = 3e-8 if args.lr is None else args.lr
     if not 1 <= args.envs <= 8 or args.batch_size % args.microbatch or args.eval_cases > 48:
@@ -267,14 +272,35 @@ def main():
         raise ValueError("positive train settings and nonnegative eval case count required")
     if args.output.exists():
         raise FileExistsError(args.output)
-    os.sched_setaffinity(0, set(range(8)))
+    os.sched_setaffinity(0, set(sorted(os.sched_getaffinity(0))[:8]))
     torch.set_num_threads(1)
     torch.set_float32_matmul_precision("highest")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     rng = np.random.default_rng(args.seed)
     policy, source = load_prior(args.checkpoint)
-    head = NoiseHead().cuda()
+    pick_only = source["config"].get("objective") == "target_lift"
+    if pick_only and args.data is None:
+        raise ValueError("pick-only RL requires --data for its reset and held-out scenes")
+    args.execute_chunk = EXECUTE if args.execute_chunk is None else args.execute_chunk
+    args.max_frames = (300 if pick_only else MAX_FRAMES) if args.max_frames is None else args.max_frames
+    if not 1 <= args.execute_chunk <= policy.flow.horizon or args.max_frames < 1:
+        raise ValueError("positive frame budget and K within the policy horizon required")
+    template, eval_cases = None, None
+    if pick_only:
+        rows = [json.loads(line) for line in (args.data / "manifest.jsonl").read_text().splitlines() if line.strip()]
+        first = next(row for row in rows if row["split"] == "train")
+        template = json.loads((args.data / first["path"] / "episode.json").read_text())["scene"]
+        test_rows = sorted((row for row in rows if row["split"] == "test"), key=lambda row: row["path"])
+        eval_cases = []
+        for noise_seed in (0, 1):
+            for row in test_rows:
+                meta = json.loads((args.data / row["path"] / "episode.json").read_text())
+                eval_cases.append(dict(seed=row["seed"], task_id=0, target_id=row["target_id"],
+                    scene=meta["scene"], permutation=meta["permutation"], noise_seed=noise_seed, reference=row["path"]))
+        if args.eval_cases != len(eval_cases):
+            raise ValueError(f"pick-only held-out evaluation requires --eval-cases {len(eval_cases)}")
+    head = NoiseHead(policy.flow.horizon).cuda()
     trainable = [p for p in policy.parameters() if p.requires_grad]
     actor_optimizer = torch.optim.AdamW([dict(params=trainable, lr=initial_lr),
                                         dict(params=head.parameters(), lr=1e-6)], weight_decay=0.)
@@ -288,7 +314,7 @@ def main():
         restore_actor_optimizer(actor_optimizer, resumed["actor_optimizer"], args.lr)
     args.lr = actor_optimizer.param_groups[0]["lr"]
     args.output.mkdir(parents=True)
-    config = dict(vars(args), checkpoint=str(args.checkpoint), output=str(args.output),
+    config = dict(vars(args), checkpoint=str(args.checkpoint), output=str(args.output), data=str(args.data) if args.data else None,
                   resume=str(args.resume) if args.resume else None,
                   method="ReinFlow/PPO; joint Gaussian denoising path likelihood, no logprob normalization",
                   source_step=source["step"], source_epoch=source["epoch"],
@@ -298,8 +324,8 @@ def main():
                   auxiliary="privileged critic + bounded learned Gaussian transition noise head",
                   reset="100% covered setup_scene, no context/shuffle, balanced 24 queries x two slot orders",
                   reset_randomization="same position/yaw/joint ranges and physics as prior",
-                  horizon=25, execute_chunk=EXECUTE, flow_steps=FLOW_STEPS, waypoint_hz=25, servo_hz=50,
-                  temporal_ensemble=False, max_frames=MAX_FRAMES, gamma_per_waypoint=GAMMA,
+                  horizon=policy.flow.horizon, execute_chunk=args.execute_chunk, flow_steps=FLOW_STEPS, waypoint_hz=25, servo_hz=50,
+                  temporal_ensemble=False, max_frames=args.max_frames, gamma_per_waypoint=GAMMA,
                   lambda_per_waypoint=LAMBDA, reward_scale=.01,
                   reward=dict(cover_deposit_once=10, success=100, wrong_lift=-100, workspace_failure=-100,
                               time_per_waypoint=-.01, potential="gamma*Phi(next)-Phi(current), terminal Phi=0"),
@@ -311,17 +337,24 @@ def main():
                   status="starting", evaluation="48 fresh fixed scenes: task12 x target2 x slot order2, both covers closed")
     config["lr"] = actor_optimizer.param_groups[0]["lr"]
     config["noise_lr"] = actor_optimizer.param_groups[1]["lr"]
+    config["cpu_cores"] = sorted(os.sched_getaffinity(0))
+    if pick_only:
+        config.update(objective="target_lift", reset="fresh random slot positions; four balanced target queries per layout; covers parked",
+            reset_randomization="same scene_spec/permutation_spec XY bounds as e70; fixed BC initial joints, object yaw and permutation0",
+            reset_template=template, evaluation=f"{len(eval_cases)} fixed held-out cases, all four targets and noise0/1",
+            evaluation_cases=eval_cases, reward=dict(success=100,wrong_lift=-100,object_off_table=-100,
+                time_per_waypoint=-.01,potential="-10*TCP_target_distance +2*bilateral_lift_progress; gamma*Phi(next)-Phi(current), terminal Phi=0"))
     if resumed:
         config.update(resume_iteration=resumed["epoch"], resume_step=resumed["step"],
                       saved_fm_lr=resumed["actor_optimizer"]["param_groups"][0]["lr"])
     write_json(args.output / "config.json", config)
     readme = (f"# {args.output.name}\n\nOnline ReinFlow/PPO from {args.checkpoint}, BC epoch {source['epoch']}/step {source['step']}.\n"
               "Only FM velocity modules train; the full observation/conditioning stack is frozen. Critic/noise head are RL auxiliaries.\n"
-              "RL uses fresh random covered resets without shuffle.\n"
-              f"H25/K5, Euler10; 25Hz waypoints/50Hz linear interpolation, no TE, 1000-frame budget. {args.envs} CPU envs, GPU0.\n"
+              f"RL resets: {config['reset']}.\n"
+              f"H{policy.flow.horizon}/K{args.execute_chunk}, Euler10; 25Hz waypoints/50Hz linear interpolation, no TE, {args.max_frames}-frame budget. {args.envs} CPU envs, GPU0.\n"
               f"{args.iterations} PPO iterations, {args.rollout_steps} macro steps/env/iteration; batch {args.batch_size}, microbatch {args.microbatch}, "
               f"2 PPO epochs, actor LR {args.lr}, critic LR3e-4, noise LR1e-6. Reward/discount/contact evaluated at each 25Hz waypoint.\n"
-              f"Baseline and evaluation every {args.eval_every} iterations use {args.eval_cases} fixed held-out resets, with identical K5/no-TE control.\n"
+              f"Baseline and evaluation every {args.eval_every} iterations use {args.eval_cases} fixed held-out cases, with identical K{args.execute_chunk}/no-TE control.\n"
               "Method: https://reinflow.github.io/ ; complete settings in [config.json](config.json).\n\nStatus: running.\n")
     if resumed:
         readme += (f"\nResume from {args.resume}, iteration{resumed['epoch']}/step{resumed['step']}; "
@@ -330,7 +363,7 @@ def main():
     (args.output / "README.md").write_text(readme)
     print(json.dumps(dict(event="initialized", trainable_parameters=config["trainable_parameters"],
                           frozen_digest=digest, source=str(args.checkpoint))), flush=True)
-    vector = VectorGrasp(args.envs)
+    vector = VectorGrasp(args.envs, execute=args.execute_chunk, max_frames=args.max_frames, template=template)
     query_queue = resumed["query_queue"] if resumed else []
     episode_index = resumed["episode_index"] if resumed else 0
     if resumed:
@@ -338,6 +371,12 @@ def main():
 
     def reset_next():
         nonlocal query_queue, episode_index
+        if pick_only:
+            if not query_queue:
+                query_queue = rng.permutation(4).tolist()
+            item = dict(seed=7100000 + episode_index // 4, task_id=0, target_id=int(query_queue.pop()))
+            episode_index += 1
+            return item
         if not query_queue:
             query_queue = balanced_queries(rng)
         task, target, order = query_queue.pop()
@@ -352,7 +391,7 @@ def main():
     complete = False
     try:
         write_json(args.output / "progress.json", dict(stage="baseline", iteration=start_iteration))
-        baseline = evaluate(policy, vector, args.output, start_iteration, args.eval_cases)
+        baseline = evaluate(policy, vector, args.output, start_iteration, args.eval_cases, eval_cases)
         best_success = baseline["success"]
         for i in range(args.envs):
             vector.send(i, "reset", reset_next())
@@ -400,7 +439,7 @@ def main():
             if iteration % args.eval_every == 0 or iteration == start_iteration + args.iterations:
                 if frozen_digest(policy) != digest:
                     raise ValueError("frozen policy parameters changed")
-                result = evaluate(policy, vector, args.output, iteration, args.eval_cases)
+                result = evaluate(policy, vector, args.output, iteration, args.eval_cases, eval_cases)
                 if result["success"] > best_success:
                     best_success = result["success"]
                     torch.save(saved, args.output / "best.tmp")

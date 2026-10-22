@@ -20,6 +20,39 @@ A privileged critic uses simulator poses,
 velocities, contacts, task/query, prior servo command and completion counters.
 Discard critic/noise at deployment and use the normal FM ODE sampler.
 
+For pick-only counterfactual priors, the action horizon comes from the BC
+checkpoint. `--data` supplies the reset template and held-out scenes. Fresh
+training resets randomize slot/object XY with the original pick generator;
+robot initial joints, object yaw and color permutation stay matched to the
+spatial BC experiment. Four target queries share each training layout.
+The pick reward requires the requested object to rise over4cm with both jaws
+for ten waypoints; wrong-object lifts and objects falling off the table fail.
+There is no cover-removal reward. Both the shape cache and Gaussian path use
+the checkpoint horizon, including H50.
+
+Example e70 refinement (fresh output, eight CPU cores and one GPU):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=egl PYOPENGL_PLATFORM=egl \
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+taskset -c 20-27 python -u -m OATFlow.rl.train \
+  --checkpoint /workspace/checkpoints/e70_cf10/latest.pt \
+  --data /workspace/datasets/e68_spatial \
+  --output /workspace/checkpoints/e71_rein \
+  --execute-chunk 15 --max-frames 300 \
+  --iterations 50 --rollout-steps 64 --envs 8 \
+  --batch-size 256 --microbatch 4 --lr 3e-7 \
+  --eval-every 5 --eval-cases 16 --seed 0
+```
+
+The 16 development evaluation cases are g004/g005 ×four targets ×noise0/1.
+Evaluate the source prior before any update with the same FP32 FM sampler
+used by RL; compare RL against that measured baseline. Frozen encoding is
+bf16. Baseline/evaluation uses the regular ODE sampler, not the exploration
+noise head. During collection, privileged coordinates enter reward/critic
+only. At rollout completion, report actor updates, KL stops, likelihood
+recomputation errors and frozen-parameter checks in the run artifacts.
+
 `GraspEnv` resets directly with the same `setup_scene` used by the prior: two
 closed covers, two randomized objects each, random cover/table positions,
 object yaw, slot order and robot pose. No reveal, shuffle, context rendering or

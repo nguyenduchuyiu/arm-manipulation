@@ -1,4 +1,4 @@
-"""Covered-state resets and K5 transitions for the absolute-joint prior."""
+"""Covered and pick-only ReinFlow environments with absolute joint chunks."""
 import multiprocessing as mp
 import os
 
@@ -19,8 +19,9 @@ MAX_FRAMES = 1000
 
 
 class GraspEnv(MemoryOcclusionEnv):
-    def __init__(self):
-        super().__init__(max_episode_steps=MAX_FRAMES)
+    def __init__(self, execute=EXECUTE, max_frames=MAX_FRAMES):
+        super().__init__(max_episode_steps=max_frames)
+        self.execute, self.max_frames = execute, max_frames
         self.segmentation_renderer.close()
         self.ee = self.model.site("grasp_site").id
 
@@ -73,7 +74,7 @@ class GraspEnv(MemoryOcclusionEnv):
                                self.data.site_xpos[self.ee], contacts, np.eye(12)[self.task_id],
                                np.eye(4)[self.target_id],
                                [self.cover_paid, self.cover_lifted, self.grasp_hold_steps / 10,
-                                self.elapsed_steps / MAX_FRAMES])).astype(np.float32)
+                                self.elapsed_steps / self.max_frames])).astype(np.float32)
 
     def packet(self):
         return dict(overview=self._overview(), wrist=self.wrist_image(),
@@ -82,8 +83,8 @@ class GraspEnv(MemoryOcclusionEnv):
 
     def step_chunk(self, actions):
         actions = np.asarray(actions, dtype=np.float32)
-        if actions.shape != (EXECUTE, 6) or not np.isfinite(actions).all():
-            raise ValueError("K5 finite absolute normalized actions required")
+        if actions.shape != (self.execute, 6) or not np.isfinite(actions).all():
+            raise ValueError(f"K{self.execute} finite absolute normalized actions required")
         rewards, details = [], []
         terminated = truncated = False
         for action in actions:
@@ -113,7 +114,7 @@ class GraspEnv(MemoryOcclusionEnv):
             elif escaped:
                 self.failure_reason = "object_out_of_workspace"
             terminated = self.success or self.failure_reason is not None
-            truncated = self.elapsed_steps >= MAX_FRAMES and not terminated
+            truncated = self.elapsed_steps >= self.max_frames and not terminated
             if self.success:
                 reward += 100.
             elif terminated:
@@ -147,9 +148,105 @@ class GraspEnv(MemoryOcclusionEnv):
         self.renderer.close()
 
 
-def _worker(pipe, core):
+class PickEnv(GraspEnv):
+    """Pick-only resets matching the spatial counterfactual BC prior."""
+    def __init__(self, template, execute, max_frames):
+        super().__init__(execute, max_frames)
+        self.template = template
+
+    def reset(self, *, seed, task_id, target_id, scene=None, permutation=0):
+        from controllers.oracle_pick import GraspFailure
+        from OATFlow.pick.scene import permutation_spec, scene_spec, setup
+        if task_id != 0 or target_id not in range(4):
+            raise ValueError("pick-only uses task0 and target0..3")
+        if scene is not None:
+            setup(self, scene, permutation)
+        else:
+            for attempt in range(100):
+                try:
+                    spec = permutation_spec(scene_spec(seed), 0)
+                    spec.update(initial_arm=self.template["initial_arm"], yaw=self.template["yaw"])
+                    setup(self, spec, 0)
+                    break
+                except ValueError as error:
+                    if "overlapping" not in str(error):
+                        raise
+                    seed += 100000
+                except GraspFailure:
+                    seed += 100000
+            else:
+                raise ValueError("no feasible pick reset after100scene candidates")
+        self.query_target = TARGETS[target_id]
+        self.task_id, self.target_id, self.seed = task_id, target_id, seed
+        self.permutation = permutation
+        self.elapsed_steps = self.grasp_hold_steps = 0
+        self.success = False
+        self.failure_reason = None
+        self.episode_return = 0.
+        self.max_lifts = np.zeros(4)
+        self.phase = "execute"
+        self.phi = self.potential()
+        return self.packet()
+
+    def potential(self):
+        target = self.target_positions()[self.query_target]
+        distance = np.linalg.norm(self.data.site_xpos[self.ee] - (target + (0, 0, .01)))
+        lift = target[2] - self.initial_positions[self.query_target][2]
+        held = len(jaw_contacts(self.model, self.data, self.query_target)) == 2
+        return -10. * distance + (2. * np.clip(lift / .04, 0., 1.) if held else 0.)
+
+    def privileged(self):
+        contacts = [len(jaw_contacts(self.model, self.data, name)) / 2 for name in TARGETS]
+        return np.concatenate((self.data.qpos, self.data.qvel,
+            normalized(self.data.ctrl, self.model.actuator_ctrlrange), self.data.site_xpos[self.ee],
+            contacts, np.eye(4)[self.target_id],
+            [self.grasp_hold_steps / 10, self.elapsed_steps / self.max_frames])).astype(np.float32)
+
+    def step_chunk(self, actions):
+        actions = np.asarray(actions, dtype=np.float32)
+        if actions.shape != (self.execute, 6) or not np.isfinite(actions).all():
+            raise ValueError(f"expected finite K{self.execute}x6 actions")
+        rewards, details = [], []
+        terminated = truncated = False
+        for action in actions:
+            command = physical_joint_action(action, self.model.actuator_ctrlrange)
+            step_joint_waypoint(self.model, self.data, np.clip(command, *self.model.actuator_ctrlrange.T))
+            self.elapsed_steps += 1
+            positions = self.target_positions()
+            lifts = np.array([positions[name][2] - self.initial_positions[name][2] for name in TARGETS])
+            self.max_lifts = np.maximum(self.max_lifts, lifts)
+            contacts = len(jaw_contacts(self.model, self.data, self.query_target))
+            self.grasp_hold_steps = self.grasp_hold_steps + 1 if lifts[self.target_id] > .04 and contacts == 2 else 0
+            wrong = next((name for i, name in enumerate(TARGETS) if i != self.target_id and lifts[i] > .04), None)
+            if wrong:
+                self.failure_reason = "wrong_object_lifted"
+            elif any(pos[2] < -.02 for pos in positions.values()):
+                self.failure_reason = "object_off_table"
+            self.success = self.grasp_hold_steps >= 10 and self.failure_reason is None
+            terminated = self.success or self.failure_reason is not None
+            truncated = self.elapsed_steps >= self.max_frames and not terminated
+            next_phi = 0. if terminated else self.potential()
+            shaping = GAMMA * next_phi - self.phi
+            self.phi = next_phi
+            reward = -.01 + shaping + (100. if self.success else -100. if terminated else 0.)
+            rewards.append(reward)
+            details.append(dict(reward=reward, shaping=shaping, held=self.grasp_hold_steps, wrong_object=wrong))
+            self.episode_return += reward
+            if terminated or truncated:
+                break
+        m = len(rewards)
+        episode = dict(seed=self.seed, task_id=0, target_id=self.target_id, target=self.query_target,
+            frames=self.elapsed_steps, success=self.success, cover_removed=False, wrong_object=wrong,
+            reason="success" if self.success else self.failure_reason or ("timeout" if truncated else None),
+            return_raw=self.episode_return, max_object_lift_m=dict(zip(TARGETS, self.max_lifts.tolist())))
+        return self.packet(), dict(reward=sum(GAMMA ** i * r for i, r in enumerate(rewards)), frames=m,
+            discount=GAMMA ** m, trace_discount=(GAMMA * LAMBDA) ** m, terminated=terminated,
+            truncated=truncated, episode=episode, waypoint_details=details)
+
+
+def _worker(pipe, core, settings):
     os.sched_setaffinity(0, {core})
-    env = GraspEnv()
+    env = PickEnv(**settings["kwargs"]) if settings["pick_only"] else GraspEnv(**settings["kwargs"])
     try:
         while True:
             command, argument = pipe.recv()
@@ -168,12 +265,18 @@ def _worker(pipe, core):
 
 class VectorGrasp:
     """CPU simulations/renderers; one batched CUDA policy lives in the parent."""
-    def __init__(self, count=8):
+    def __init__(self, count=8, *, execute=EXECUTE, max_frames=MAX_FRAMES, template=None):
         context = mp.get_context("spawn")
+        self.execute, self.max_frames = execute, max_frames
+        self.pick_only = template is not None
+        settings = dict(pick_only=self.pick_only, kwargs=dict(execute=execute, max_frames=max_frames))
+        if self.pick_only:
+            settings["kwargs"]["template"] = template
+        cores = sorted(os.sched_getaffinity(0))
         self.pipes, self.processes = [], []
-        for core in range(count):
+        for index in range(count):
             parent, child = context.Pipe()
-            process = context.Process(target=_worker, args=(child, core))
+            process = context.Process(target=_worker, args=(child, cores[index % len(cores)], settings))
             process.start()
             child.close()
             self.pipes.append(parent)

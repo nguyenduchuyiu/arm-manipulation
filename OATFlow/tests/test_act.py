@@ -69,6 +69,22 @@ class ACTTests(unittest.TestCase):
         for name in ('state_mean', 'state_std', 'action_mean', 'action_std'):
             torch.testing.assert_close(getattr(restored.act, name), getattr(model.act, name))
 
+    def test_vision_finetuning_keeps_gradients_and_respects_eval(self):
+        model = PriorPolicy(horizon=7, action_head='act', train_vision=True).train()
+        self.assertTrue(model.vision_encoder.training)
+        rgb = torch.randint(0, 256, (1, 3, 320, 320), dtype=torch.uint8)
+        overview, wrist = model.encode_views(rgb, rgb)
+        (overview.square().mean() + wrist.square().mean()).backward()
+        for parameter in (model.vision_encoder.conv_proj.weight,
+                          model.vision_encoder.encoder.layers[-1].self_attention.in_proj_weight):
+            self.assertIsNotNone(parameter.grad)
+            self.assertGreater(float(parameter.grad.abs().sum()), 0)
+        model.eval()
+        self.assertFalse(model.vision_encoder.training)
+        with torch.no_grad():
+            features = model.encode_views(rgb, rgb)
+        self.assertTrue(all(not feature.requires_grad for feature in features))
+
 
 if __name__ == '__main__':
     unittest.main()

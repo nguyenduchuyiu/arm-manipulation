@@ -96,7 +96,7 @@ def main():
     parser.add_argument("--horizon", type=int, default=25, choices=(25, 50))
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--min-lr", type=float, default=3e-6)
-    parser.add_argument("--warmup-steps", type=int, default=500)
+    parser.add_argument("--warmup-steps", type=int, default=500, help="0 disables warmup")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     if args.restart_scheduler and args.resume is None:
@@ -105,8 +105,8 @@ def main():
         raise RuntimeError("CUDA required")
     if min(args.epochs, args.batch_size) < 1 or args.lr <= 0:
         raise ValueError("positive epochs, batch and learning rate required")
-    if not 0 < args.min_lr <= args.lr or args.warmup_steps < 1:
-        raise ValueError("positive min LR <= peak LR; positive warmup")
+    if not 0 < args.min_lr <= args.lr or args.warmup_steps < 0:
+        raise ValueError("positive min LR <= peak LR; nonnegative warmup")
     if args.output.exists():
         raise FileExistsError(args.output)
     summary = json.loads((args.data / "generation_summary.json").read_text())

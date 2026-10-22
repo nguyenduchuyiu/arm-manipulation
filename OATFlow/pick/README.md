@@ -33,3 +33,24 @@ python -m unittest discover -s OATFlow/tests
 ```
 
 Evaluation uses learned actions, 25 Hz waypoints with 50 Hz linear interpolation, a 300-frame budget and no temporal ensemble. Reports include color confusion and success by slot; lifting a wrong object is failure. Videos and simulator traces are saved for paired queries. Report train, validation and held-out success separately; training loss does not measure grasp competence.
+# Counterfactual color permutations
+
+Generate a controlled four-permutation CF experiment from a complete fixed-color
+CF dataset and its nominal train/test reference. Four cyclic permutations cover
+every color/slot pair. Four disjoint reverse-cycle permutations provide a
+composition evaluation; coordinates, yaw and initial robot pose stay fixed.
+Only target identity is fed to the policy; permutation and slot are metadata.
+
+```bash
+python -m OATFlow.pick.counterfactual \
+  --source /workspace/datasets/e70_cf10 \
+  --reference /workspace/datasets/e68_spatial \
+  --output /workspace/datasets/e73_perm --workers 8
+```
+
+New full expert trajectories start at restored approach states every10frames,
+using the previous held command, and receive fresh oracle action labels for
+each alternative target. Reuse the four existing nominal branches at each
+initial state. All valid frames become stride1 training starts. Do not pass
+this four-permutation dataset to the full24-permutation batch planner.
+Run generation in tmux with one GPU, at most eight CPU cores and a saved log.

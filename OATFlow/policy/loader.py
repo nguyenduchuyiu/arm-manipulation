@@ -1,4 +1,4 @@
-"""Action-chunk DataLoader with LeRobot decoding and shared compressed MP4s."""
+"""Shared video decoding and batching for prior-policy training."""
 import sys
 import shutil
 import tempfile
@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from tqdm.auto import tqdm
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 from lerobot.datasets.video_utils import VideoDecoderCache, decode_video_frames_torchcodec
 
@@ -69,57 +69,6 @@ def release_videos(videos):
     if any(Path(path).parent != directory for path in videos.values()):
         raise ValueError("video cache must have one dedicated directory")
     shutil.rmtree(directory)
-
-
-def prepare_samples(episodes, items, wrist):
-    from OATFlow.policy.data import training_clip
-
-    def decode_episode(episode_id):
-        episode = episodes[episode_id][1]
-        if not isinstance(episode["rgb"], LeRobotVideoFrames):
-            return episode_id, episode
-        ends = np.unique([end for index, end, _active in items if index == episode_id])
-        indices = np.unique(np.rint(np.linspace(0, ends, 30, axis=1)).astype(np.int64))
-        episode = episode.copy()
-        # Decode each episode's entire batch in one LeRobot call, sharing GOP work.
-        episode["rgb"] = episode["rgb"][indices]
-        episode["rgb_frames"] = indices
-        if wrist:
-            episode["wrist_rgb"] = episode["wrist_rgb"][ends]
-            episode["wrist_frames"] = ends
-        return episode_id, episode
-
-    ids = sorted({episode_id for episode_id, _end, _active in items})
-    decoded = dict(map(decode_episode, ids))
-    return [tuple(tensor[0] for tensor in training_clip(
-        decoded[episode_id], end, active, "cpu", include_wrist=wrist))
-        for episode_id, end, active in items]
-
-
-class ActionChunkDataset(Dataset):
-    """LeRobot decoding with context history and absolute joint targets."""
-
-    def __init__(self, root, rows, samples, videos, flow_only, wrist):
-        self.root, self.rows, self.samples = root, rows, samples
-        self.videos, self.flow_only, self.wrist = videos, flow_only, wrist
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, index):
-        return self.__getitems__([index])[0]
-
-    def __getitems__(self, indices):
-        from OATFlow.policy.data import load_joint_episode, load_policy_episode
-        items = [self.samples[index] for index in indices]
-        episodes = {}
-        load = load_policy_episode if self.flow_only else load_joint_episode
-        for episode_id in sorted({item[0] for item in items}):
-            row = self.rows[episode_id]
-            episode = load(self.root / row["path"], require_wrist=self.wrist,
-                           training_cache=True, videos=self.videos)
-            episodes[episode_id] = row, episode
-        return prepare_samples(episodes, items, self.wrist)
 
 
 def make_dataloader(dataset, batches, seed, pin_memory):

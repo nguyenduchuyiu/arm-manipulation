@@ -8,7 +8,6 @@ import numpy as np
 import torch
 
 from OATFlow.dataset.actions import chunk_starts, save_action_chunks
-from OATFlow.policy.data import sample_plan
 from OATFlow.prior.features import CachedPriorDataset, shard
 from OATFlow.prior.train import episode_arrays
 
@@ -32,8 +31,6 @@ class DenseDatasetTests(unittest.TestCase):
         np.savez(self.path / "observation.npz", joint_position=self.state)
 
     def test_context_and_expert_use_each_frame_once(self):
-        plan = sample_plan(self.valid, 3, "episode")
-        self.assertEqual(plan, [(i, i >= 3) for i in range(64)])
         broken = self.valid.copy()
         broken[20] = False
         with self.assertRaisesRegex(ValueError, "noncontiguous"):

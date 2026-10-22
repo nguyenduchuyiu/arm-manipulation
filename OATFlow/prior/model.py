@@ -8,8 +8,9 @@ from OATFlow.policy.model import ContextDecoder, FlowMatchingHead
 
 
 class PriorPolicy(nn.Module):
-    def __init__(self, vision_weights=None, flow_weights=None, horizon=25, action_head='fm'):
+    def __init__(self, vision_weights=None, flow_weights=None, horizon=25, action_head='fm', train_vision=False):
         super().__init__()
+        self.train_vision = train_vision
         if action_head not in ('fm', 'act'):
             raise ValueError('action head must be fm or act')
         self.action_head_type = action_head
@@ -42,8 +43,8 @@ class PriorPolicy(nn.Module):
             grid = F.interpolate(grid, (20, 20), mode="bicubic", align_corners=True)
             state["encoder.pos_embedding"] = torch.cat((pos[:, :1], grid.flatten(2).transpose(1, 2)), 1)
             self.vision_encoder.load_state_dict(state, strict=True)
-        self.vision_encoder.requires_grad_(False)
-        self.vision_encoder.eval()
+        self.vision_encoder.requires_grad_(train_vision)
+        self.vision_encoder.train(train_vision)
         self.view_embedding = nn.Parameter(torch.randn(2, 1, 960) * .02)
         self.task_embedding = nn.Embedding(12, 960)
         self.target_embedding = nn.Embedding(4, 960)
@@ -62,11 +63,14 @@ class PriorPolicy(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        self.vision_encoder.eval()
+        self.vision_encoder.train(mode and self.train_vision)
         return self
 
-    @torch.no_grad()
     def encode_views(self, overview, wrist):
+        with torch.set_grad_enabled(torch.is_grad_enabled() and self.train_vision):
+            return self._encode_views(overview, wrist)
+
+    def _encode_views(self, overview, wrist):
         batch = len(overview)
         if overview.shape != (batch, 3, 320, 320) or wrist.shape != overview.shape:
             raise ValueError("both views must be current RGB [B,3,320,320]")
@@ -77,10 +81,11 @@ class PriorPolicy(nn.Module):
         grid = features.transpose(1, 2).reshape(2 * batch, 768, 20, 20)
         return F.adaptive_avg_pool2d(grid, (8, 8)).flatten(2).transpose(1, 2).split(batch)
 
-    def conditioning_features(self, overview, wrist, proprio, task_id, target_id):
+    def conditioning_input_features(self, overview, wrist, proprio, task_id, target_id):
+        """Concatenated observation tokens immediately before the context decoder."""
         batch = len(proprio)
         if overview.shape != (batch, 64, 768) or wrist.shape != overview.shape:
-            raise ValueError("cached views must be frozen ViT features [B,64,768]")
+            raise ValueError("views must be ViT features [B,64,768]")
         if proprio.shape != (batch, 6) or task_id.shape != (batch,):
             raise ValueError("expected proprio [B,6] and task IDs [B]")
         if task_id.dtype != torch.long or (task_id < 0).any() or (task_id >= 12).any():
@@ -96,6 +101,10 @@ class PriorPolicy(nn.Module):
                              self.task_embedding(task_id)[:, None],
                              self.target_embedding(target_id)[:, None],
                              self.head.state_proj(state)[:, None]), 1)
+        return context
+
+    def conditioning_features(self, overview, wrist, proprio, task_id, target_id):
+        context = self.conditioning_input_features(overview, wrist, proprio, task_id, target_id)
         return self.context_decoder(context, self.flow.context_projections if self.action_head_type == 'fm' else None)
 
     def conditioning(self, overview, wrist, proprio, task_id, target_id):

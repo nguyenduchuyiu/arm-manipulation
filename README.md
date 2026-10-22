@@ -1,6 +1,11 @@
 # NexArm manipulation
 
-The main project is [OATFlow](OATFlow/README.md): pretrain a vision manipulation prior with FM or ACT, then train TCOW + FM end-to-end for object memory through cover shuffling. Its learned policies use absolute joint commands. Shared NexArm/HOPE environments and the standalone viewer are retained.
+The main project is [OATFlow](OATFlow/README.md): causal point-query XYZ tracking and joint-input10D delta-EE reach, plus separate vision/FM or ACT priors. Shared NexArm/HOPE environments and the standalone viewer are retained.
+
+Reusable code: [tracking](OATFlow/tracking/README.md), [reach](OATFlow/reach/README.md),
+[top-view localization](OATFlow/localization/README.md), [data tools](OATFlow/data_tools/README.md).
+Models/data/metadata: `/workspace/robotics_assets`. Old workspace_analysis scripts
+and experiment artifacts have been removed.
 
 ## Setup
 
@@ -12,10 +17,6 @@ source .venv/bin/activate
 python -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt
 
-# TCOW is a local upstream dependency, excluded from this repository.
-git clone https://github.com/basilevh/tcow.git OATFlow/third_party/tcow
-git -C OATFlow/third_party/tcow checkout a72e3e13a45e4156137328e5290f9e848d360367
-
 # HOPE meshes are also fetched separately.
 git clone https://github.com/swtyree/hope-dataset.git assets/hope-dataset
 git -C assets/hope-dataset checkout 621d855f58817f8edbb4367ee0efbb7786a59a66
@@ -26,9 +27,10 @@ export MUJOCO_GL=egl PYOPENGL_PLATFORM=egl
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 ```
 
-The HOPE [downloader](https://github.com/swtyree/hope-dataset/blob/621d855f58817f8edbb4367ee0efbb7786a59a66/setup.py) installs the low-resolution meshes used by the scenes. TCOW includes its modified TimeSformer; `OATFlow/policy/tracking.py` loads it directly.
-
-Supply ImageNet ViT-B/16 weights, a prepared [SmolVLA base](https://huggingface.co/lerobot/smolvla_base) action-expert export, and TCOW initializer/configuration checkpoints. These are external artifacts, not files committed to this repository. The FM source revision is `d9f33c94a60fb382c90dea2164c96845bd955e28`; the action expert loader validates its exact tensor keys. See [prior training](OATFlow/prior/README.md) and [joint training](OATFlow/policy/README.md) for the required inputs and commands.
+The HOPE downloader installs the low-resolution scene meshes. OATFlow's native
+one-camera point-query tracking model requires no external tracker checkout. Its compact
+pretrained RGB backbone is an external tensor artifact. See
+[tracking](OATFlow/tracking/README.md) and [prior training](OATFlow/prior/README.md).
 
 ## Simulation and data collection
 
