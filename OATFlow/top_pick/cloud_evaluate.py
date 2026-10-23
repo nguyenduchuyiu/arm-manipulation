@@ -1,6 +1,7 @@
 """Evaluate final E119 on every held-out episode, front RGB only; no video rendering."""
 import argparse
 from collections import Counter
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -23,12 +24,13 @@ from OATFlow.top_pick.features import sha
 from OATFlow.top_pick.xyz_map import camera_calibration
 
 
-def rollout(rows, model, physics, visual, renderer, option, out, frame_budget=300,k=10):
+def rollout(rows, model, physics, visual, renderer, option, out, frame_budget=300,k=10,data_root=DATA):
     assert 1<=k<=25
+    device=next(model.parameters()).device
     display = mujoco.MjData(visual); scenes = []
     for row in rows:
         scene = Scene(physics)
-        with np.load(DATA/row['path']/'sim_state.npz') as z:
+        with np.load(data_root/row['path']/'sim_state.npz') as z:
             for field in ('qpos','qvel','ctrl'):getattr(scene.data,field)[:] = z['initial_'+field]
         mujoco.mj_forward(physics,scene.data)
         state = scene.data
@@ -38,7 +40,7 @@ def rollout(rows, model, physics, visual, renderer, option, out, frame_budget=30
             initial_objects=np.stack([state.xpos[physics.body(n).id] for n in NAMES[:4]]),
             qpos=[],commands=[],objects=[],contacts=[],success=False,done=False,reason='timeout',
             streak=0,longest=0))
-    generator=torch.Generator(device='cuda').manual_seed(0)
+    generator=torch.Generator(device=device).manual_seed(0)
     with torch.no_grad():
         for frame in tqdm(range(frame_budget),desc=f'Front camera pick H25/K{k}',mininterval=10,leave=False):
             active=[s for s in scenes if not s['done']]
@@ -55,14 +57,14 @@ def rollout(rows, model, physics, visual, renderer, option, out, frame_budget=30
                         codes=np.zeros(depth.shape,np.uint16);codes[valid]=np.rint(depth[valid]/.002).astype(np.uint16)
                         K,transform=camera_calibration(visual,display)
                         scene_inputs.append((codes,K,transform))
-                rgb=torch.from_numpy(np.stack(pixels)).permute(0,3,1,2).cuda()
-                joint=torch.tensor(np.stack(joints),dtype=torch.float32,device='cuda')
-                target=torch.tensor([s['row']['target_id'] for s in active],device='cuda')
-                noise=model.flow.sample_noise(1,'cuda',generator).expand(len(active),-1,-1)
-                with torch.autocast('cuda',dtype=torch.bfloat16):
+                rgb=torch.from_numpy(np.stack(pixels)).permute(0,3,1,2).to(device)
+                joint=torch.tensor(np.stack(joints),dtype=torch.float32,device=device)
+                target=torch.tensor([s['row']['target_id'] for s in active],device=device)
+                noise=model.flow.sample_noise(1,device,generator).expand(len(active),-1,-1)
+                with torch.autocast('cuda',dtype=torch.bfloat16) if device.type=='cuda' else nullcontext():
                     extra={}
                     if scene_inputs:
-                        geometry={key:torch.as_tensor(np.stack([s[i] for s in scene_inputs]),device='cuda',dtype=torch.float32)
+                        geometry={key:torch.as_tensor(np.stack([s[i] for s in scene_inputs]),device=device,dtype=torch.float32)
                                   for i,key in enumerate(('depth','intrinsics','camera_to_base'))}
                         extra=dict(scene=geometry)
                     plans=model.sample(model.encode(rgb),joint,target,noise,steps=10,**extra).float().cpu().numpy()

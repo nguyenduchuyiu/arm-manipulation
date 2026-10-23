@@ -1,0 +1,7 @@
+# Installed in .venv-sam3 only; existing .venv PyTorch/CUDA runtime is shared by .pth.
+transformers==5.20.2
+huggingface-hub==2.3.0
+tokenizers==0.23.3
+safetensors==0.8.0
+regex==2026.6.28
+# Other isolated runtime dependencies are recorded in environment.json.

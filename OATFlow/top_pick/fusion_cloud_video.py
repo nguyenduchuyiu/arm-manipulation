@@ -73,12 +73,12 @@ def metric(prediction,truth,ee,target):
     return result
 
 
-def render(record,test,out,model,policy,experiment='E120',training='final23520 /80epochs',physical_overview=False,clean_depth_labels=False,k=10):
+def render(record,test,out,model,policy,experiment='E120',training='final23520 /80epochs',physical_overview=False,clean_depth_labels=False,k=10,name=None):
     assert 1<=k<=25
     device=next(policy.parameters()).device
     trace=test/(record['path'].replace('/','_')+'.npz');trace_hash=sha(trace)
     with np.load(trace) as z:qpos=np.vstack((z['initial_qpos'][None],z['qpos']));contacts=z['contacts']
-    name=('success_' if record['success'] else 'failure_')+record['group']
+    name=name or ('success_' if record['success'] else 'failure_')+record['group']
     target_id=NAMES.index(record['target']);body=model.body(record['target']).id
     state=mujoco.MjData(model);site=model.site('grasp_site').id
     option=mujoco.MjvOption();option.geomgroup[3]=0
