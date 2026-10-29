@@ -1,0 +1,21 @@
+# E172 — Continue E171 Gaussian FM from18k to50k
+
+Status: resuming18000 to50000.
+
+Purpose: continue the no-SE3 geometry run to50000totalsteps, not restart. Restore E171last18000 model, AdamW moments/counters, numpydata RNG, Gaussian generator, CPU timestep RNG and CUDA RNG. Inherit E171best17500 as eligible validation baseline. Completed E171/E170 artifacts remain unchanged.
+
+Architecture/data unchanged:580483trainable FM/adapters, frozen E168best16500 grounding862080parameters produces task Z128×128 + scene memory4096×128.128Gaussian particles,2layers,width128,4heads,particleSA+conditionCA,sharedXYZ/time projection, no particle-index embedding. No GT center/Rg/masks/pose/explicitXYZ bypass or output normalization. SourceGaussian N(0,I)metres; output128XYZ. E157 fullsceneRGB320×240/4096points withrobot/chair/rug,4coloredcubes,GT128visiblepoints.1024train/4096tasks,128val and128each IID/positions/rotations/sizes/combinations. Canonicalview0 only duringtraining, no SE3augmentation;4cachedIIDSE3views are OODtest. Frozen source encoder originally SE3-trained. Reuse E170cache read-only without copies.
+
+Training:18001→50000,32000additional updates; B8scenes×4tasks,FP32 parameters/attention/optimizer/MSE/Euler,TF32off; cacheFP16castFP32. ExactunsquaredHungarianGaussian↔GT matching, straightCFM, only velocityMSE(m²); timestep1−(Beta(1.5,1)×.999+.001). AdamWwd.01,clip1,allstate retained. NewLR schedule:3e-5 at18000→1e-4 at18500 (500step linear ramp), then cosine→1e-5 at50000. LR and budget both change, so this does not isolate LR effects. Ancestor model/data seed170,Gaussianseed167; actual continuation restores saved RNG rather than reseeding. Consume viewRNG draws as parent then force0.
+
+Parent: `/workspace/robotics_assets/experiments/e171_nose3/train/resume.pt`,step18000; exact model equality with parent's last.pt and full optimizer/RNG verified before run. Parentbest17500 copied as eligible candidate. Frozen source `/workspace/robotics_assets/experiments/e168_normfm/train/best.pt` step16500,SHA25665527d6657e57aef6552c01bf1d33c2c9014c88a08a4c332693342f71e776207. Parent/cache/model hashes recorded in verify_resume.json/train/config.json. Model and flow source byte-identical to E171; no cross-experiment code imports.
+
+Validation/test unchanged: canonical val128scenes×4tasks,20Eulersteps,fixedGaussianseed167 every500steps; select minimum worldEMD, including inheritedbest. SE3val diagnostic only. Best andlast50k autoevaluated on train/val/all5heldoutcanonicalsets and4IIDSE3views. Compare against savedE17118k andE17018k with exactly matching GT: EMD,centroid,alignedCD,directionalCD,unitshapeEMD,Rgerror,robustXYZextents,GTsurfacevoxel4mm coverage@2/5mm,nearestGTcentroid targetselection. Visible-surfaces only. Single seed. Best-vs-GT viewer uses best selected by canonicalvalidation, not test results.
+
+Code isolated branch `exp/e172-fm50k` from65c7f27, selective own E171 copies plus minimal full-state resume helper pattern; original source hashes in sources.json. Commit recorded with artifacts. Run `/workspace/arm-manipulation/.venv-concerto/bin/python code/run.py verify_resume`, then `... code/run.py train` from experiment root. Trainer creates fresh train directory and autoevaluates at50k. Attachedtmux `ssh_tmux:e172-log`,stdout+stderr saved to `/workspace/robotics_assets/experiments/e172_fm50k/run.log`. Expected additional training≈70minutes plus evaluation. Oncompletion existing forwarded viewer `http://localhost:17070/e172.html`. No50kresult claimed yet.
+
+Artifact status: resuming18000 to50000. Executing source commit: `ab8dab28b404dcfea1f456f245bd93b8166cd310`.
+
+Resume verification passed: exact model/AdamW states and CPU/CUDA/data/noise RNG; repeated next source/noise/timestep/path identical. Actual step18001 MSE0.0020140258129686117 exactly matches preflight, optimizer step18001 verified. Initial canonical validation equals E171last18000. Training running to50k; inheritedbest17500=10.5048248mm preserved. See verify_resume.json,train/config.json,run.log. No50kresult yet.
+
+Paused explicitly at user request after process had stopped. Log reached26000, last saved full-state resume checkpoint step25000. Do not resume until user requests.

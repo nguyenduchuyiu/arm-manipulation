@@ -1,0 +1,7 @@
+# e110 held-out XYZ failure video
+
+Diagnostic selected after the fixed96episode/540endpoint test: the case with the largest post-shuffle XYZ error for the primary checkpoint, epoch79/step8374 selected on validation from the completed100epoch run. This extra video illustrates a failure; it does not change checkpoint selection, test results or the five videos fixed before evaluation. The exact selected endpoint/episode/error and baseline/main checkpoint references are recorded in config.json and ../config.json.
+
+Training: full2,048query episodes/stride10/batch1280, XYZ-only context/projection/readout learning, frozen Track-On-R/DINOv3, frozen ImageNet cam-left ViT and frozen reach FM/state encoder. Initial10epoch and continued100epoch learning configuration is documented in ../README.md and source train configs. Primary display is the selected79epoch context; baseline is10epochs, both on identical frozen perception features.
+
+Green is GT object center projected into top view; orange left panel is10epoch XYZ; pink right panel is selected best. Initial point prompt, current static cam-left surrogate wrist view, phase/time/3D error and prediction age are shown. Native inference at stride10plus segment terminals; retain last causal prediction between updates, output25FPS1280x900H264. Recorded expert motion only; no FM control, manipulation success, H/K/flow/noise/frame budget. Entire individual MP4 and comparison.mp4 must decode with the exact source frame count. Result: pending until verified.

@@ -1,0 +1,13 @@
+# e106_track — TCOW-only XYZ pretraining
+
+Status: starting. Stage one of a staged tracker → frozen-feature FM approach, requested after stopping e105. This experiment trains the tracker only; FM is not instantiated.
+
+Data: original shuffle_pick_multiview, top camera only. Main run uses all2,048 training query episodes /512shared contexts;32 validation query episodes use layouts32/33 and permutations0/9/16/18. Preflight uses only4train/4validation episodes. Both context and expert segments are sampled at stride10 plus terminal frames; every training endpoint is included once per epoch, with a shuffled order and retained small final batch. Full one-epoch run is planned; actual counts, steps and physical batch are recorded in config.json. Batch is selected using measured VRAM; no accumulation or gradient checkpointing.
+
+Input:30past/current top RGB frames,320square cropped rows40:280 to240x320. Uniform raw-time causal prefix, nearest available past cached RGB, always retaining frame0 and current endpoint. A radius3UVdot is present only in the initial query frame. No object ID, numerical XYZ, joint state, mask, or camera calibration enters the tracker. Raw RGB is cached in host RAM; features are not cached during tracker training.
+
+Initialize TCOW from the original official RGB/query-channel weights, with new spatial pooling and XYZ head; all121,751,048parameters are trainable. No e100/e101/e105 fine-tuned weights initialize this experiment. Head topology remains770→256→3; no segmentation head. Supervise train-normalized object-center XYZ with L=0.5current-frame MSE+0.5prefix MSE. Train-only mean/std,10mm std floor. BF16, AdamW(.9,.95),wd1e-4,clip1; backboneLR1e-5/headLR1e-4,100warmup updates then constant.
+
+Validation covers visible,shuffle,post-shuffle,cover-exposed and lifted endpoints. Best is selected by the equal-weight mean of the five phase mean XYZ errors, rather than cover-opening error alone. Validate at step1, every500updates, and completion. Initial model validation is recorded. Checkpoint best/latest/final are tracker-only; latest contains optimizer, CPU/CUDA/NumPy RNG, order and cursor for resume. Saves are atomic.
+
+No action labels or behavior cloning are used. H/K, flow integration steps, action noise and robot rollout budgets do not apply. Held-out tracker evaluation and subsequent frozen-feature FM training are not yet run. Exact configuration/hashes: config.json; query-channel/full-backbone gradient checks: gradient_checks.json; training loss/error/VRAM/time: metrics.jsonl and progress.json; phase metrics/predictions: validation.jsonl and last_validation.json. Model outputs are tracked XYZ, not manipulation success.

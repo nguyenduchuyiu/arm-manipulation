@@ -1,0 +1,6 @@
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402"] # EGL and local source paths must be set before imports.

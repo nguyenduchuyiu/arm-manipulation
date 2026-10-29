@@ -1,15 +1,7 @@
 # AGENTS.md
 
 # Working Env
-uv env named ".venv"
-
-## Files and directoy management
-
-* Delete temporary test, preparation, and execution code after use unless the user asks to keep it.
-* Remove finished preflight artifact folders, including their checkpoints and feature caches, after recording essential verification results in research notes.
-
-* Keep the repository root focused on the overall arm manipulation project and shared assets, controllers, and environments.
-* Put task-specific code, scenes, data tools, and docs in a top-level folder for that task (for example, `memory_occlusion/`), organized into subfolders by role.
+use uv venv
 
 ## Working style
 
@@ -130,14 +122,28 @@ After making changes, report:
 
 ## Experiment names and descriptions
 
+* Keep experiment-specific code inside that experiment's own directory.
+* Keep only genuinely reusable implementation in shared repository modules. An experiment may import shared code, but its own variants must stay within its experiment directory; do not build chains of per-experiment packages importing other experiment packages. Record the shared dependencies and their source hashes for reproducibility.
+* This organization rule applies to future work. Do not relocate old experiments as part of a new run unless the user requests cleanup; preserve their saved paths and reproducibility.
 * Use short experiment names such as `e01_delta`, `e02_joint`, `e03_freeze`, and `e04_vit`. Use the next unused numeric ID for a new experiment; put dates and detailed settings in metadata rather than in the directory name. This user preference supersedes the older requirement to prefix every run with `memory_occlusion`.
 * Keep related tests under the experiment as `test_k10`, `test_k25`, etc.; use a short numeric suffix for repetitions and never overwrite earlier results. Keep run, log, and tmux names short and consistent.
 * Every experiment output folder, including a standalone test folder, must contain a short `README.md`: experiment purpose/change, actual training configuration (data, source weights, frozen/trainable modules, epochs, batch, learning rate, action representation), and actual test configuration (checkpoint/step, scenes, H/K, flow steps, noise seed, frame budget). Record status/results and link exact configuration files. Mark tests as planned, incomplete, or not run when applicable.
-* Prepare this README locally before launching a run, copy it beside the server artifacts once the trainer has created its fresh output directory, and update it after completion or interruption. Do not pre-create trainer output directories: current trainers reject existing outputs. Include the README when copying results locally. A small README beside server artifacts is required by the user; canonical research documentation remains local. Use `docs/research/EXPERIMENT_TEMPLATE.md` as a starting point.
-* Keep existing artifact paths intact when adding descriptions. Local bash scripts need not change;
+
+
+## Experiment isolation and code reuse
+
+- Use a dedicated Git branch/worktree for experiments requiring isolated code changes.
+- Keep experiment-specific code in `experiments/e###_name/code/`; do not mix variants into shared modules.
+- Start new experiments from `main` or a chosen previous commit.
+- Reuse code selectively via `git restore`, `cherry-pick`, or copying specific files. Never import directly from another experiment.
+- Do not modify completed experiments when developing new ones.
+- Move code into shared modules only when it is genuinely reusable across experiments.
+- Commit code before running and record the exact Git commit hash and reused code sources in the experiment README.
+- Keep datasets, checkpoints, logs, and temporary outputs out of Git.
 
 ## Long running rule
 Dont read all logs but save it to a log file and grep if needed.
+Run each experiment in a separate named window of the user's attached tmux session (currently `ssh_tmux`), so the user can switch to its live logs. Do not put runs only in separate detached sessions. Leave the current window selected, set `remain-on-exit on` for the experiment window, and report its name.
 For every long-running command in tmux, stream its main stdout and stderr to the tmux window while saving the same output to a log file (for example, `set -o pipefail; command 2>&1 | tee -a "$log_file"`). Do not redirect the only live output away from tmux. When several stages share a run, keep their current progress visible in a clearly named tmux window.
 Use `tqdm` for every long-running code path so progress is visible in tmux and saved in the run log.
 

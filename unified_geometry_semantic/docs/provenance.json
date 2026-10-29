@@ -1,0 +1,41 @@
+{
+  "original_sources": {
+    "code/common.py": "58adc20023c92c5ed1355a1a2678bfec2cd06891693cfc6c6c5ec9a195abea60",
+    "code/model.py": "24c1235829eef7fe27888819084412ebaa93b1a4f76a17a65b4a19349c0d3aa4",
+    "code/emd.py": "9b71b178f837aa9047d9993db2ed558a1f415aa47155537233e7074f16aa19e7",
+    "code/transforms.py": "389d6c24bd4cf2ebae08b861fc4720aed6e3f4601f22d4bb3121bda4147aa655",
+    "code/shape.py": "606b71a6ff97e2f84ca5e76b24f2a2e3993a6f9b609d00bdc87bec7306238ed6",
+    "code/projection.py": "65591be20a6cb2aee14ba82281263f9d6a72a3ad77f4cc03a4fa54108f0c7bd2",
+    "code/coverage.py": "79a1081b43d311cc1d206670e5e35ac573f73b1d84e8b3d6c959e292d5065aa7",
+    "code/metrics.py": "96d38d36c32a8b5e5b05f33d4aba842f313fa6eee3fdea3fe135c5fb2c2bae39",
+    "code/graph.py": "ed68a124f43f8ced073ae73553adca8d9f069766210f931fdce5be879486e8ab",
+    "code/data.py": "0a960383ffcd61cf8a7b6aeab95d2aff5b25c9359d86873c7981a4655e8831e4",
+    "code/features.py": "fa03a51772d18e29d7ff0e03181f2bd761a694b4d043c192297009adbfca4d8e",
+    "code/cache.py": "61d2e6c2c9544454053d7cd8057068e4fef33cf0e8363fa9afdf50277ad7e073",
+    "code/fetch_weights.py": "63170743db32aeb9a88b449f726cd49c0758e6d15073665ae346af317feaeb24",
+    "code/generate.py": "4579e461b3fc97c8d6c210e22dcf92d2a04ed1ad49a90191379b6e63b442c7ff",
+    "code/generate_tests.py": "7436d26598bdcd3d69865c0c5ac41c368265879b894d0cd0e2e3a5ef1e8ccaf3",
+    "code/audit_data.py": "2f3c6bdf7b443f63b9fd25c67f540460f373547c9223c411ad8a0f7c45fcfdcb",
+    "code/renderer.py": "40393cd40fdf29ebb19bb110f6e95f15fcd286aa4abd46a898d46245d7fb4be9",
+    "code/render_camera.py": "5e1f6d4dcf37f82a7e5fd14081f91d5dd23b80b23d6d7d29852327b1d1ab4b9a",
+    "code/render_shapes.py": "28a2dc657ab841574141c4ed0a67a5d19023d98145b2e5642efeb2a329f34834",
+    "code/simulation.py": "93bc925423074112ce8c934753105371476b4e164b84d6c365127896efc07e56",
+    "code/scene_sampling.py": "482a1d4a048cc346be2bf19d83817432f2d427c6ac8948f946b5e5ae14e419c1",
+    "code/train.py": "cf97079aba01896c7f154eba5596a77a76114dc131fa55ed4dd8c06290add58d",
+    "code/evaluate.py": "0c20d821638bc2c13dcc6e3a398a33f1feb214a134368c72784fafe4711bee59",
+    "code/ood.py": "81f705575e44003010e433ecefc72381aeea76da7c3e1f9d582f01608260185d",
+    "code/controls.py": "d6ed8cd80eecb0bb1ad3f25cac1d402baeb9da72d60fe299294c892be4567493",
+    "code/report.py": "d1e147a7095661f5c3d18b94b06a91569d12d550d3ecc941c84b6607dba88393"
+  },
+  "layout": "src/configs/assets/tests/outputs",
+  "validation": "Core regression suite; model/loss AST unchanged; retained model integration passed.",
+  "verification": {
+    "core_suite": "3 tests passed, including retained resource integration",
+    "isolated_source_copy": "core tests passed in standalone copy without datasets/pretrained; retained integrations explicitly skipped",
+    "model_loss_definitions": "AST unchanged from retained implementation",
+    "production_data_paths": {
+      "pick_collection": "16 expert episodes and first RGB-D/wrist render passed",
+      "e178_audit": "3072 scenes, GT/depth/XYZ/UV/SE3 consistency passed"
+    }
+  }
+}

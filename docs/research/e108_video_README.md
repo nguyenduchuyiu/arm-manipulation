@@ -1,0 +1,9 @@
+# e108 — context-decoder XYZ tracking videos
+
+Status: prepared. Uses best.pt, epoch27/step2457, after 30 epochs of XYZ-only training on e107 part1 (412 query episodes, 11,568 stride25 points), batch128, context/projection LR1e-4, XYZ head LR1e-5. Original TCOW, ImageNet ViT-B/16 and reach-trained FM are frozen. Four context blocks and visual projections/readout are trained. No gradient checkpointing. Cam-left is a static surrogate for a future wrist camera.
+
+Three deterministic cases: first episode in the actual part1 train-point manifest, first validation episode, and first both-unseen episode from the fixed held-out test list. No selection by prediction quality. The video performs new online inference from recorded images, with causal30-frame top history and frame0 point, current left RGB and measured joints. Predictions every3 raw frames plus each segment terminal (approximately8.33Hz), held causally for25FPS presentation. This stride3 video inference differs from the stride10 fixed-phase quantitative test; video errors are not the reported test aggregate. GT never enters the model except the initial UV annotation.
+
+Green: GT object center; magenta: predicted center; orange: initial query. Top overlays are projected from robot-base XYZ. The footer shows recorded expert motion: FM does not control the arm here. H/K, flow integration steps and action noise are not applicable. Checkpoint hash, exact cases, inference settings and decode verification are saved in config.json/summary.json; per-case NPZ stores actual sparse predictions, raw frame indices and dense GT. The split labels indicate train membership, held-out validation, and unseen layout+order respectively.
+
+Run from the repository: `.venv/bin/python -m OATFlow.shuffle_bc.context_video --output /workspace/robotics_assets/experiments/e108_context/videos`.
