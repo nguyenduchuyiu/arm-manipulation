@@ -1,0 +1,12 @@
+{
+  "name": "nexarm",
+  "path": "robot/nexarm",
+  "kind": "robot_assets",
+  "files": [
+    "visual_reference.xml",
+    "physics_reference.xml",
+    "settled_home.npz",
+    "ik_seeds.npz",
+    "meshes"
+  ]
+}
